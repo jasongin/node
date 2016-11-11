@@ -35,6 +35,9 @@ API design considerations:
    c) There is an option to retain the legacy console-logging behavior of those methods in case any
       applications rely on it. Is that needed? Should it be on by default?
 
+   d) Should console.log(), console.error() and similar methods also generate tracing events,
+      with the logged message included in the event args?
+
 3) Performance is critical - Emitting trace events should have minimal impact to an application,
    especially when tracing is not enabled for the event categories because there are no registered
    JavaScript or C++ listeners categories.
@@ -275,9 +278,9 @@ interface Console {
      * the id.
      * @param [category] Optional category name or array of category names for the tracing event.
      * If unspecified, then Console.defaultTracingCategory is used.
-     * @param [args] Optional additional arguments for the trace event. If specified, this must be
-     * a dictionary containing 0-2 key-value pairs. (The tracing system currently supports only up
-     * to 2 arguments.)
+     * @param [args] Optional additional arguments for the trace event. This can be a string,
+     * or a dictionary containing 0-2 key-value pairs, or a function that returns either of those.
+     * (The tracing system currently supports only up to 2 arguments.)
      *
      * EXISTING NODE.JS & WEB METHOD + NEW OPTIONAL PARAMETERS FOR TRACING
      * @see {@link https://nodejs.org/dist/latest-v6.x/docs/api/console.html#console_console_time_label}
@@ -286,7 +289,7 @@ interface Console {
     time(name: string,
         id?: string,
         category?: string | string[],
-        args?: { [name: string]: any }): void;
+        args?: string | { [name: string]: any } | (() => string | { [name: string]: any })): void;
 
     /**
      * Emits an "end" tracing event.
@@ -300,9 +303,9 @@ interface Console {
      * used as the id.
      * @param [category] Optional category name or array of category names for the tracing event.
      * If unspecified, then Console.defaultTracingCategory is used.
-     * @param [args] Optional additional arguments for the trace event. If specified, this must be
-     * a dictionary containing 0-2 key-value pairs. (The tracing system currently supports only up
-     * to 2 arguments.)
+     * @param [args] Optional additional arguments for the trace event. This can be a string,
+     * or a dictionary containing 0-2 key-value pairs, or a function that returns either of those.
+     * (The tracing system currently supports only up to 2 arguments.)
      *
      * EXISTING NODE.JS & WEB METHOD + NEW OPTIONAL PARAMETERS FOR TRACING
      * @see {@link https://nodejs.org/dist/latest-v6.x/docs/api/console.html#console_console_timeend_label}
@@ -311,7 +314,7 @@ interface Console {
     timeEnd(name: string,
         id?: string,
         category?: string | string[],
-        args?: { [name: string]: any }): void;
+        args?: string | { [name: string]: any } | (() => string | { [name: string]: any })): void;
 
     /**
      * Emits an "instant" tracing event.
@@ -322,16 +325,16 @@ interface Console {
      * @param name Required name of the time stamp.
      * @param [category] Optional category name or array of category names for the tracing event.
      * If unspecified, then Console.defaultTracingCategory is used.
-     * @param [args] Optional additional arguments for the trace event. If specified, this must be
-     * a dictionary containing 0-2 key-value pairs. (The tracing system currently supports only up
-     * to 2 arguments.)
+     * @param [args] Optional additional arguments for the trace event. This can be a string,
+     * or a dictionary containing 0-2 key-value pairs, or a function that returns either of those.
+     * (The tracing system currently supports only up to 2 arguments.)
      *
      * NEW NODE.JS METHOD, EXISTING WEB METHOD + NEW OPTIONAL PARAMETERS FOR TRACING
      * @see {@link https://developer.mozilla.org/en-US/docs/Web/API/Console/timeStamp}
      */
     timeStamp(name: string,
         category?: string | string[],
-        args?: { [name: string]: any }): void;
+        args?: string | { [name: string]: any } | (() => string | { [name: string]: any })): void;
 
     /**
      * True to retain legacy behavior of writing timeEnd/timeStamp/count info to stdout.
