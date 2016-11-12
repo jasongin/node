@@ -141,8 +141,10 @@ interface Tracing {
      * this method are also not logged to the console.)
      *
      * @param e The event to be emitted. The event object must specify one or more categories.
+     * @returns True if the event was emitted; false if the event was not emitted becase tracing
+     * was not enabled for any of the event categories.
      */
-    emit(e: TracingEvent): void;
+    emit(e: TracingEvent): boolean;
 
     /**
      * Emits a tracing event using an event object, with categories specified separately. This is
@@ -152,8 +154,10 @@ interface Tracing {
      * @param category Required tracing category name or array of one or more category names for
      * the tracing event. Overrides any categories specified in the event object.
      * @param e The event to be emitted.
+     * @returns True if the event was emitted; false if the event was not emitted becase tracing
+     * was not enabled for any of the event categories.
      */
-    emit(category: string | string[], e: TracingEvent): void;
+    emit(category: string | string[], e: TracingEvent): boolean;
 
     /**
      * Alias for addListener.
