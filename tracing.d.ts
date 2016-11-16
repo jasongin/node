@@ -212,23 +212,23 @@ interface Tracing {
      * Gets all the JavaScript listeners for one or more categories of tracing events.
      * Non-JavaScript listeners are not included in the returned list.
      *
-     * @param category Required tracing category name or array of one or more
+     * @param category Optional tracing category name or array of one or more
      * category names to retrieve listeners for.
      * @returns Array of listeners for the specified categories. Even if a listener is registered
      * for more than one of the categories, it is only included in the list once.
      */
-    listeners(category: string | string[]): TracingEventListener[];
+    listeners(category?: string | string[]): TracingEventListener[];
 
     /**
      * Gets a count of all the JavaScript listeners for one or more categories of tracing events.
      * Non-JavaScript listeners are not included in the count.
      *
-     * @param category Required tracing category name or array of one or more category names to
+     * @param category Optional tracing category name or array of one or more category names to
      * count listeners for.
      * @returns Count of listeners for the specified categories. Even if a listener is registered
      * for more than one of the categories, it is only counted once.
      */
-    listenerCount(category: string | string[]): number;
+    listenerCount(category?: string | string[]): number;
 }
 
 /**
@@ -260,6 +260,8 @@ interface Console {
      * it sets the value of the single-value counter. For a multi-value counter, this is must be a
      * dictionary object containing 2 name-value pairs. (The tracing system currently requires
      * multi-value counters to have exactly two values.)
+     * @param [id] Optional identifier that can be used to distinguish count events from others
+     * with the same name.
      * @param [category] Optional category name or array of category names for the tracing event.
      * If unspecified, then Console.defaultTracingCategory is used.
      *
@@ -268,6 +270,7 @@ interface Console {
      */
     count(name: string,
         value?: number | { [name: string]: number },
+        id?: string,
         category?: string | string[]): void;
 
     /**
