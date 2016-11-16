@@ -35,8 +35,8 @@ API design considerations:
    c) There is an option to retain the legacy console-logging behavior of those methods in case any
       applications rely on it. Is that needed? Should it be on by default?
 
-   d) Should console.log(), console.error() and similar methods also generate tracing events,
-      with the logged message included in the event args?
+   d) There is an option to generate tracing events from console.log(), console.error() and similar
+      methods. Is that needed? Should it be on by default?
 
 3) Performance is critical - Emitting trace events should have minimal impact to an application,
    especially when tracing is not enabled for the event categories because there are no registered
@@ -345,6 +345,12 @@ interface Console {
      * False to suppress. Either way those events are also directed to the tracing system.
      */
     logTracingEvents: boolean;
+
+    /**
+     * True to generate tracing events with message in event args for log(), info(), warn() and
+     * error() calls. False to suppress. Either way those messages are also written to the console.
+     */
+    traceLogMessages: boolean;
 
     /**
      * Default tracing category to use when calls to one of the tracing methods on Console do not
