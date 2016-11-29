@@ -33,7 +33,6 @@ void Agent::Start(v8::Platform* platform, const char* enabled_categories) {
       getline(category_list, category, ',');
       trace_config->AddIncludedCategory(category.c_str());
     }
-    delete[] category_list;
   } else {
     trace_config->AddIncludedCategory("v8");
     trace_config->AddIncludedCategory("node");

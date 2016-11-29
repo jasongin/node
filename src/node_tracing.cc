@@ -36,68 +36,97 @@ using v8::Value;
 // Those strings are stored here.
 static std::unordered_set<std::string> categoryGroups;
 
+static const char* GetCategoryGroup(Environment* env, const Local<Value>& categoryValue) {
+  if (categoryValue->IsString()) {
+    Utf8Value category(env->isolate(), categoryValue);
+
+    // The returned insertion is a pair whose first item is the object that was inserted or
+    // that blocked the insertion and second item is a boolean indicating whether it was inserted.
+    auto insertion = categoryGroups.insert(category.out());
+    return insertion.first->c_str();
+  }
+  else {
+    CHECK(categoryValue->IsArray());
+    Local<Array> categoryArray = Local<Array>::Cast(categoryValue);
+    uint32_t categoryCount = categoryArray->Length();
+    CHECK(categoryCount > 0);
+
+    std::ostringstream os;
+    CHECK(categoryArray->Get(0)->IsString());
+    Utf8Value category0(env->isolate(), categoryArray->Get(0));
+    os << category0.out();
+
+    for (uint32_t i = 1; i < categoryCount; i++) {
+      os << ',';
+
+      CHECK(categoryArray->Get(i)->IsString());
+      Utf8Value category(env->isolate(), categoryArray->Get(i));
+      os << category.out();
+    }
+
+    auto insertion = categoryGroups.insert(os.str());
+    return insertion.first->c_str();
+  }
+}
 
 static void EmitInstantEvent(const FunctionCallbackInfo<Value>& args) {
-    Environment* env = Environment::GetCurrent(args);
-    CHECK_GE(args.Length(), 4);
+  Environment* env = Environment::GetCurrent(args);
+  CHECK_GE(args.Length(), 4);
 
-    // args: name, id, category, args, timestamp?
-    CHECK(args[0]->IsString());
-    Utf8Value name(env->isolate(), args[0]);
-fprintf(stderr, "EmitInstantEvent(%s)\n", name.out());
+  // args: name, id, category, args, timestamp?
+  CHECK(args[0]->IsString());
+  Utf8Value nameValue(env->isolate(), args[0]);
+  const char* name = nameValue.out();
 
-    if (args[1]->IsString()) {
-        Utf8Value id(env->isolate(), args[1]);
+  const char* categoryGroup = GetCategoryGroup(env, args[2]);
 
-    }
+  if (args[3]->IsArray()) {
+    // TODO: Get args
+  }
 
-    if (args[2]->IsString()) {
-        Utf8Value category(env->isolate(), args[2]);
+  if (args[4]->IsDate()) {
+    // TODO: Timestamps are ignored because the _WITH_TIMESTAMP tracing macro variants are
+    // currently unimplemented in Node.
+  }
 
-        // TODO: Look up category in static category set.
-    }
-    else {
-        CHECK(args[2]->IsArray());
-        // TODO: Get categories array.
-
-        // TODO: Look up joined categories in static category set.
-    }
+fprintf(stderr, "EmitInstantEvent(%s, [%s])\n", name, categoryGroup);
+  TRACE_EVENT_COPY_INSTANT0(categoryGroup, name, TRACE_EVENT_SCOPE_PROCESS);
 }
 
 static void EmitBeginEvent(const FunctionCallbackInfo<Value>& args) {
-    Environment* env = Environment::GetCurrent(args);
-    CHECK_GE(args.Length(), 4);
+  Environment* env = Environment::GetCurrent(args);
+  CHECK_GE(args.Length(), 4);
 
-    // args: name, id, category, args, timestamp?
-    CHECK(args[0]->IsString());
-    Utf8Value name(env->isolate(), args[0]);
-    fprintf(stderr, "EmitBeginEvent(%s)\n", name.out());
+  // args: name, id, category, args, timestamp?
+  CHECK(args[0]->IsString());
+  Utf8Value name(env->isolate(), args[0]);
+  fprintf(stderr, "EmitBeginEvent(%s)\n", name.out());
 
 }
 
 static void EmitEndEvent(const FunctionCallbackInfo<Value>& args) {
-    Environment* env = Environment::GetCurrent(args);
-    CHECK_GE(args.Length(), 4);
+  Environment* env = Environment::GetCurrent(args);
+  CHECK_GE(args.Length(), 4);
 
-    // args: name, id, category, args, timestamp?
-    CHECK(args[0]->IsString());
-    Utf8Value name(env->isolate(), args[0]);
+  // args: name, id, category, args, timestamp?
+  CHECK(args[0]->IsString());
+  Utf8Value name(env->isolate(), args[0]);
 fprintf(stderr, "EmitEndEvent(%s)\n", name.out());
 
 }
 
 static void EmitCountEvent(const FunctionCallbackInfo<Value>& args) {
-    Environment* env = Environment::GetCurrent(args);
-    CHECK_GE(args.Length(), 4);
+  Environment* env = Environment::GetCurrent(args);
+  CHECK_GE(args.Length(), 4);
 
-    // args: name, id, category, args, timestamp?
-    CHECK(args[0]->IsString());
-    Utf8Value name(env->isolate(), args[0]);
+  // args: name, id, category, args, timestamp?
+  CHECK(args[0]->IsString());
+  Utf8Value name(env->isolate(), args[0]);
 fprintf(stderr, "EmitCountEvent(%s)\n", name.out());
 
 }
 
-static void AddTracingListenerCategory(const FunctionCallbackInfo<Value>& args) {
+static void AddListenerCategory(const FunctionCallbackInfo<Value>& args) {
   Environment* env = Environment::GetCurrent(args);
   CHECK_GE(args.Length(), 1);
   CHECK(args[0]->IsString());
@@ -106,13 +135,26 @@ static void AddTracingListenerCategory(const FunctionCallbackInfo<Value>& args) 
   // TODO: Add listener for category.
 }
 
-static void RemoveTracingListenerCategory(const FunctionCallbackInfo<Value>& args) {
+static void RemoveListenerCategory(const FunctionCallbackInfo<Value>& args) {
   Environment* env = Environment::GetCurrent(args);
   CHECK_GE(args.Length(), 1);
   CHECK(args[0]->IsString());
   Utf8Value category(env->isolate(), args[0]);
 
   // TODO: Remove listener for category.
+}
+
+static void GetEnabledCategories(const FunctionCallbackInfo<Value>& args) {
+    // TODO: Get category list
+}
+
+static void SetEnabledCategories(const FunctionCallbackInfo<Value>& args) {
+    // TODO: Call env.tracing_agent()->Start() if necessary.
+    // TODO: Call env.tracing_agent()->Stop() if necessary.
+}
+
+static void Flush(const FunctionCallbackInfo<Value>& args) {
+    // TODO: Flush
 }
 
 void InitTracing(Local<Object> target,
@@ -125,8 +167,11 @@ void InitTracing(Local<Object> target,
   env->SetMethod(target, "emitEndEvent", EmitEndEvent);
   env->SetMethod(target, "emitInstantEvent", EmitInstantEvent);
   env->SetMethod(target, "emitCountEvent", EmitCountEvent);
-  env->SetMethod(target, "addTracingListenerCategory", AddTracingListenerCategory);
-  env->SetMethod(target, "removeTracingListenerCategory", RemoveTracingListenerCategory);
+  env->SetMethod(target, "addListenerCategory", AddListenerCategory);
+  env->SetMethod(target, "removeListenerCategory", RemoveListenerCategory);
+  env->SetMethod(target, "getEnabledCategories", GetEnabledCategories);
+  env->SetMethod(target, "setEnabledCategories", SetEnabledCategories);
+  env->SetMethod(target, "flush", Flush);
 }
 
 }  // namespace node

@@ -119,11 +119,12 @@ interface TracingEventListener {
  * emit and listen to tracing events via the C++ APIs. Events emitted in C++ can be received by
  * JavaScript listeners; the converse is also true.
  *
- * This interface has methods that are similar to EventEmitter, with an important difference:
- * events may be emitted under multiple categories simultaneously (instead of a single event name),
- * and listeners may listen to multiple categories while still only being called once per event.
+ * This class extends CategoryEventEmitter to support emitting and listening to tracing events
+ * from JavaScript code. The action of adding a listener automatically enables trace event
+ * recording for the specified category or categories if necessary. Similarly, removing the last
+ * listener automatically stops recording, if there are no categories enabled separately.
  */
-interface Tracing {
+interface Tracing extends CategoryEventEmitter {
     /**
      * Checks whether tracing is enabled for a category or for any categories in an array.
      * Note tracing for a category may be enabled even when listenerCount returns 0, if there are
@@ -134,6 +135,30 @@ interface Tracing {
      * array.
      */
     isEnabled(category: string | string[]): boolean;
+
+    /**
+     * Gets a list of categories that are enabled for tracing independently from any JavaScript
+     * listeners. The complete list of categories enabled for tracing is a union of this list and
+     * the CategoryEventEmitter.listenerCategories list.
+     */
+    enabledCategories(): string[];
+
+    /**
+     * Sets a list of categories that are enabled for tracing independently from any JavaScript
+     * listeners. The complete list of categories enabled for tracing is a union of this list and
+     * the CategoryEventEmitter.listenerCategories list.
+     *
+     * Trace event recording is automatically started when a non-empty list of categories is
+     * specified here, or via the node command-line, or when any JavaScript listeners are added.
+     * Recording is automatically stopped when an empty list of categories is specified here
+     * and there are no JavaScript listeners.
+     */
+    setEnabledCategories(categories: string): void;
+
+    /**
+     * Gets an object that can be used to set options for tracing.
+     */
+    readonly options: TracingOptions;
 
     /**
      * Emits a tracing event using an event object. This is an alternative to calling one of the
@@ -158,77 +183,30 @@ interface Tracing {
      * was not enabled for any of the event categories.
      */
     emit(category: string | string[], e: TracingEvent): boolean;
+}
+
+/**
+ * Options for controlling system-wide tracing behavior.
+ */
+interface TracingOptions {
+    /**
+     * True to retain legacy behavior of writing timeEnd/timeStamp/count info to stdout.
+     * False to suppress. Either way those events are also directed to the tracing system.
+     */
+    logConsoleTracingEvents: boolean;
 
     /**
-     * Alias for addListener.
-     * Adds a listener for one or more categories of tracing events. The action of adding a
-     * listener automatically enables tracing for the specified category or categories, if it was
-     * not already enabled by another listener.
-     *
-     * @param category Required tracing category name or array of one or more category names to
-     * listen to.
-     * @param listener Receives tracing events of the requested category or categories. A listener
-     * is invoked only once per event, even for a multi-category event.
+     * True to generate tracing events with message in event args for console log(), info(), warn()
+     * and error() calls. False to suppress. Either way those messages are also written to the
+     * console.
      */
-    on(category: string | string[], listener: TracingEventListener): void;
+    traceConsoleLogMessages: boolean;
 
     /**
-     * Adds a listener for one or more categories of tracing events. The action of adding a
-     * listener automatically enables tracing for the specified category or categories, if it was
-     * not already enabled by another listener.
-     *
-     * @param category Required tracing category name or array of one or more category names to
-     * listen to.
-     * @param listener Receives tracing events of the requested category.
-     * or categories. A listener is invoked only once per event, even for a multi-category event.
+     * Default tracing category to use when calls to one of the tracing methods on Console do not
+     * specify a category.
      */
-    addListener(category: string | string[], listener: TracingEventListener): void;
-
-    /**
-     * Removes a listener for one or more categories of tracing events. The action of removing a
-     * listener automatically disables tracing for the specified category or categories, if there
-     * are no other listeners remaining.
-     *
-     * @param category Required tracing category name or array of one or more category names to
-     * stop listening to.
-     * @param listener The listener to remove.
-     */
-    removeListener(category: string | string[], listener: TracingEventListener): void;
-
-    /**
-     * Removes all JavaScript listeners for one or more categories of tracing events, or removes
-     * all JavaScript listeners for all categories if no category argument is supplied. The action
-     * of removing listeners automatically disables tracing for the specified category or
-     * categories, if there are no other listeners remaining. Because method does not remove any
-     * non-JavaScript listeners, it is possible for tracing to still be enabled for the categories
-     * after calling this method.
-     *
-     * @param category Required tracing category name or array of one or more category names to
-     * stop listening to.
-     */
-    removeAllListeners(category?: string | string[]): void;
-
-    /**
-     * Gets all the JavaScript listeners for one or more categories of tracing events.
-     * Non-JavaScript listeners are not included in the returned list.
-     *
-     * @param category Optional tracing category name or array of one or more
-     * category names to retrieve listeners for.
-     * @returns Array of listeners for the specified categories. Even if a listener is registered
-     * for more than one of the categories, it is only included in the list once.
-     */
-    listeners(category?: string | string[]): TracingEventListener[];
-
-    /**
-     * Gets a count of all the JavaScript listeners for one or more categories of tracing events.
-     * Non-JavaScript listeners are not included in the count.
-     *
-     * @param category Optional tracing category name or array of one or more category names to
-     * count listeners for.
-     * @returns Count of listeners for the specified categories. Even if a listener is registered
-     * for more than one of the categories, it is only counted once.
-     */
-    listenerCount(category?: string | string[]): number;
+    defaultConsoleTracingCategory: string;
 }
 
 /**
@@ -344,29 +322,92 @@ interface Console {
         args?: string | { [name: string]: any } | (() => string | { [name: string]: any })): void;
 
     /**
-     * True to retain legacy behavior of writing timeEnd/timeStamp/count info to stdout.
-     * False to suppress. Either way those events are also directed to the tracing system.
-     */
-    logTracingEvents: boolean;
-
-    /**
-     * True to generate tracing events with message in event args for log(), info(), warn() and
-     * error() calls. False to suppress. Either way those messages are also written to the console.
-     */
-    traceLogMessages: boolean;
-
-    /**
-     * Default tracing category to use when calls to one of the tracing methods on Console do not
-     * specify a category.
-     */
-    defaultTracingCategory: string;
-
-    /**
-     * Provices access to the tracing methods via the Console module.
+     * Provides access to the tracing methods via the Console module.
      */
     tracing: Tracing;
 
     //
     // Non-tracing-related Console methods are omitted here.
     //
+}
+
+
+/**
+ * Enables emitting and listening to events in multiple categories.
+ *
+ * This interface has methods that are similar to EventEmitter, with an important difference:
+ * events may be emitted under multiple categories simultaneously instead of a single event name,
+ * and listeners may listen to multiple categories while still only being called once per event.
+ */
+interface CategoryEventEmitter {
+    /**
+     * Emits an event for a category or categories.
+     *
+     * @param category Required category name or array of one or more category names.
+     * @param args Optional arguments for the event to be emitted.
+     * @returns True if the event was emitted; false if the event was not emitted becase there
+     * were no listeners for any of the categories.
+     */
+    emit(category: string | string[], ...args: any[]): boolean;
+
+    /**
+     * Alias for addListener. Adds a listener for one or more categories of events.
+     *
+     * @param category Required category name or array of one or more category names to listen to.
+     * @param listener Receives events of the requested category or categories. A listener is
+     * invoked only once per event, even for a multi-category event.
+     */
+    on(category: string | string[], listener: Function): void;
+
+    /**
+     * Adds a listener for one or more categories of events.
+     *
+     * @param category Required category name or array of one or more category names to listen to.
+     * @param listener Receives events of the requested category. or categories. A listener is
+     * invoked only once per event, even for a multi-category event.
+     */
+    addListener(category: string | string[], listener: Function): void;
+
+    /**
+     * Removes a listener for one or more categories of events.
+     *
+     * @param category Required category name or array of one or more category names to stop
+     * listening to.
+     * @param listener The listener to remove.
+     */
+    removeListener(category: string | string[], listener: Function): void;
+
+    /**
+     * Removes all listeners for one or more categories of events, or removes all listeners
+     * for all categories if no category argument is supplied.
+     *
+     * @param category Required category name or array of one or more category names to stop
+     * listening to.
+     */
+    removeAllListeners(category?: string | string[]): void;
+
+    /**
+     * Gets all the listeners for one or more categories of events.
+     *
+     * @param category Optional category name or array of one or more category names to retrieve
+     * listeners for.
+     * @returns Array of listeners for the specified categories. Even if a listener is registered
+     * for more than one of the categories, it is only included in the list once.
+     */
+    listeners(category?: string | string[]): Function[];
+
+    /**
+     * Gets a count of all the listeners for one or more categories of events.
+     *
+     * @param category Optional category name or array of one or more category names to count
+     * listeners for.
+     * @returns Count of listeners for the specified categories. Even if a listener is registered
+     * for more than one of the categories, it is only counted once.
+     */
+    listenerCount(category?: string | string[]): number;
+
+    /**
+     * Gets a list of all the categories having registered listeners.
+     */
+    listenerCategories(): string[];
 }
