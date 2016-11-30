@@ -149,8 +149,11 @@ static void GetEnabledCategories(const FunctionCallbackInfo<Value>& args) {
 }
 
 static void SetEnabledCategories(const FunctionCallbackInfo<Value>& args) {
-    // TODO: Call env.tracing_agent()->Start() if necessary.
-    // TODO: Call env.tracing_agent()->Stop() if necessary.
+    Environment* env = Environment::GetCurrent(args);
+
+    // TODO: Call env->tracing_agent()->SetCategories().
+    // TODO: Call env->tracing_agent()->Start() if necessary.
+    // TODO: Call env->tracing_agent()->Stop() if necessary.
 }
 
 static void Flush(const FunctionCallbackInfo<Value>& args) {

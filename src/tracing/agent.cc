@@ -11,9 +11,13 @@ namespace tracing {
 
 using v8::platform::tracing::TraceConfig;
 
-Agent::Agent() {}
+Agent::Agent(Environment* env)
+  : parent_env_(env),
+    platform_(nullptr),
+    thread_(0) {
+}
 
-void Agent::Start(v8::Platform* platform, const char* enabled_categories) {
+void Agent::Initialize(v8::Platform* platform) {
   platform_ = platform;
 
   int err = uv_loop_init(&tracing_loop_);
@@ -25,41 +29,77 @@ void Agent::Start(v8::Platform* platform, const char* enabled_categories) {
 
   tracing_controller_ = new TracingController();
 
-  TraceConfig* trace_config = new TraceConfig();
-  if (enabled_categories) {
-    std::stringstream category_list(enabled_categories);
-    while (category_list.good()) {
-      std::string category;
-      getline(category_list, category, ',');
-      trace_config->AddIncludedCategory(category.c_str());
-    }
-  } else {
-    trace_config->AddIncludedCategory("v8");
-    trace_config->AddIncludedCategory("node");
-  }
-
-  // This thread should be created *after* async handles are created
-  // (within NodeTraceWriter and NodeTraceBuffer constructors).
-  // Otherwise the thread could shut down prematurely.
-  err = uv_thread_create(&thread_, ThreadCb, this);
-  CHECK_EQ(err, 0);
-
   tracing_controller_->Initialize(trace_buffer);
-  tracing_controller_->StartTracing(trace_config);
   v8::platform::SetTracingController(platform, tracing_controller_);
 }
 
-void Agent::Stop() {
-  if (!IsStarted()) {
-    return;
+void Agent::SetCategories(const std::vector<std::string>& category_list) {
+  categories_.clear();
+
+  for (const std::string& category : category_list) {
+    categories_.push_back(category);
   }
-  // Perform final Flush on TraceBuffer. We don't want the tracing controller
-  // to flush the buffer again on destruction of the V8::Platform.
-  tracing_controller_->StopTracing();
-  delete tracing_controller_;
-  // Thread should finish when the tracing loop is stopped.
-  uv_thread_join(&thread_);
-  v8::platform::SetTracingController(platform_, nullptr);
+
+  if (IsStarted()) {
+      // Push the updated tracing config to the tracing controller.
+      Start();
+  }
+}
+
+void Agent::SetCategories(const char* category_list) {
+  categories_.clear();
+
+  if (category_list) {
+    std::stringstream category_stream(category_list);
+    while (category_stream.good()) {
+      std::string category;
+      getline(category_stream, category, ',');
+      categories_.push_back(category.c_str());
+    }
+  }
+  else {
+    categories_.push_back("v8");
+    categories_.push_back("node");
+  }
+
+  if (IsStarted()) {
+      // Push the updated tracing config to the tracing controller.
+      Start();
+  }
+}
+
+void Agent::Start() {
+  TraceConfig* trace_config = new TraceConfig();
+
+  for (const std::string& category : categories_) {
+    trace_config->AddIncludedCategory(category.c_str());
+  }
+
+  if (!IsStarted()) {
+    // This thread should be created *after* async handles are created
+    // (within NodeTraceWriter and NodeTraceBuffer constructors).
+    // Otherwise the thread could shut down prematurely.
+    int err = uv_thread_create(&thread_, ThreadCb, this);
+    CHECK_EQ(err, 0);
+  }
+
+  tracing_controller_->StartTracing(trace_config);
+}
+
+void Agent::Stop() {
+  if (IsInitialized()) {
+    if (IsStarted()) {
+      // Perform final Flush on TraceBuffer. We don't want the tracing controller
+      // to flush the buffer again on destruction of the V8::Platform.
+      tracing_controller_->StopTracing();
+
+      // Thread should finish when the tracing loop is stopped.
+      uv_thread_join(&thread_);
+    }
+
+    v8::platform::SetTracingController(platform_, nullptr);
+    delete tracing_controller_;
+  }
 }
 
 // static

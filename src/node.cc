@@ -4451,6 +4451,13 @@ inline int Start(Isolate* isolate, IsolateData* isolate_data,
       return 12;  // Signal internal error.
   }
 
+  // Enable tracing when argv has --enable-tracing.
+  if (trace_enabled) {
+    env.tracing_agent()->Initialize(v8_platform.platform_);
+    env.tracing_agent()->SetCategories(trace_enabled_categories);
+    env.tracing_agent()->Start();
+  }
+
   {
     Environment::AsyncCallbackScope callback_scope(&env);
     LoadEnvironment(&env);

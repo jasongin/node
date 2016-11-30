@@ -11,17 +11,24 @@ namespace tracing {
 
 class Agent {
  public:
-  explicit Agent();
-  void Start(v8::Platform* platform, const char* enabled_categories);
+  explicit Agent(Environment* env);
+  void Initialize(v8::Platform* platform);
+  const std::vector<std::string>& GetCategories() { return categories_; }
+  void SetCategories(const std::vector<std::string>& category_list);
+  void SetCategories(const char* category_list);
+  void Start();
   void Stop();
+  bool IsStarted() { return thread_ != 0; }
 
  private:
-  bool IsStarted() { return platform_ != nullptr; }
+  bool IsInitialized() { return platform_ != nullptr; }
   static void ThreadCb(void* arg);
 
   uv_thread_t thread_;
   uv_loop_t tracing_loop_;
   v8::Platform* platform_ = nullptr;
+  Environment* parent_env_;
+  std::vector<std::string> categories_;
   TracingController* tracing_controller_;
 };
 
