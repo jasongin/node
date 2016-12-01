@@ -14,6 +14,7 @@ using v8::platform::tracing::TraceConfig;
 Agent::Agent(Environment* env)
   : parent_env_(env),
     platform_(nullptr),
+    tracing_controller_(nullptr),
     thread_(0) {
 }
 
@@ -37,7 +38,7 @@ void Agent::SetCategories(const std::vector<std::string>& category_list) {
   categories_.clear();
 
   for (const std::string& category : category_list) {
-    categories_.push_back(category);
+      categories_.push_back(category);
   }
 
   if (IsStarted()) {
@@ -87,18 +88,16 @@ void Agent::Start() {
 }
 
 void Agent::Stop() {
-  if (IsInitialized()) {
-    if (IsStarted()) {
-      // Perform final Flush on TraceBuffer. We don't want the tracing controller
-      // to flush the buffer again on destruction of the V8::Platform.
-      tracing_controller_->StopTracing();
+  if (IsStarted()) {
+    // Perform final Flush on TraceBuffer. We don't want the tracing controller
+    // to flush the buffer again on destruction of the V8::Platform.
+    tracing_controller_->StopTracing();
 
-      // Thread should finish when the tracing loop is stopped.
-      uv_thread_join(&thread_);
-    }
+    // Thread should finish when the tracing loop is stopped.
+    int err = uv_thread_join(&thread_);
+    CHECK_EQ(err, 0);
 
-    v8::platform::SetTracingController(platform_, nullptr);
-    delete tracing_controller_;
+    thread_ = 0;
   }
 }
 
@@ -106,6 +105,14 @@ void Agent::Stop() {
 void Agent::ThreadCb(void* arg) {
   Agent* agent = static_cast<Agent*>(arg);
   uv_run(&agent->tracing_loop_, UV_RUN_DEFAULT);
+}
+
+Agent::~Agent() {
+  if (tracing_controller_) {
+    Stop();
+    v8::platform::SetTracingController(platform_, nullptr);
+    delete tracing_controller_;
+  }
 }
 
 }  // namespace tracing

@@ -126,9 +126,9 @@ interface TracingEventListener {
  */
 interface Tracing extends CategoryEventEmitter {
     /**
-     * Checks whether tracing is enabled for a category or for any categories in an array.
-     * Note tracing for a category may be enabled even when listenerCount returns 0, if there are
-     * non-JavaScript listeners.
+     * Checks whether tracing is enabled for a category or for any categories in an array. Tracing
+     * is enabled for a category if either recording is enabled for the category or there are one
+     * or more listeners for the category.
      *
      * @param category Required tracing category name or array of category names.
      * @returns True if tracing is enabled for the category or for any of the categories in the
@@ -137,23 +137,24 @@ interface Tracing extends CategoryEventEmitter {
     isEnabled(category: string | string[]): boolean;
 
     /**
-     * Gets a list of categories that are enabled for tracing independently from any JavaScript
-     * listeners. The complete list of categories enabled for tracing is a union of this list and
-     * the CategoryEventEmitter.listenerCategories list.
+     * Gets a list of tracing categories that are enabled for recording. The complete list of
+     * enabled tracing categories is a union of this list and the
+     * CategoryEventEmitter.listenerCategories list.
      */
-    enabledCategories(): string[];
+    recordingCategories(): string[];
 
     /**
-     * Sets a list of categories that are enabled for tracing independently from any JavaScript
-     * listeners. The complete list of categories enabled for tracing is a union of this list and
-     * the CategoryEventEmitter.listenerCategories list.
-     *
-     * Trace event recording is automatically started when a non-empty list of categories is
-     * specified here, or via the node command-line, or when any JavaScript listeners are added.
-     * Recording is automatically stopped when an empty list of categories is specified here
-     * and there are no JavaScript listeners.
+     * Enables or disables recording for a tracing category or categories. Trace event recording
+     * is automatically started when one or more categories are enabled via this method or via the
+     * node command-line. Recording is automatically stopped when it is disabled for all
+     * categories.
+     * *
+     * @param category Required tracing category name or array of category names.
+     * @param enable Optional value specifying wiether recording will be enabled for the specified
+     * category or categories. (Defaults to true.)
+     * array.
      */
-    setEnabledCategories(categories: string): void;
+    enableRecording(category: string | string[], enable?: boolean);
 
     /**
      * Gets an object that can be used to set options for tracing.

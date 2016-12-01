@@ -4452,8 +4452,8 @@ inline int Start(Isolate* isolate, IsolateData* isolate_data,
   }
 
   // Enable tracing when argv has --enable-tracing.
+  env.tracing_agent()->Initialize(v8_platform.platform_);
   if (trace_enabled) {
-    env.tracing_agent()->Initialize(v8_platform.platform_);
     env.tracing_agent()->SetCategories(trace_enabled_categories);
     env.tracing_agent()->Start();
   }

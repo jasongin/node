@@ -12,6 +12,7 @@ namespace tracing {
 class Agent {
  public:
   explicit Agent(Environment* env);
+  ~Agent();
   void Initialize(v8::Platform* platform);
   const std::vector<std::string>& GetCategories() { return categories_; }
   void SetCategories(const std::vector<std::string>& category_list);
