@@ -74,18 +74,17 @@ static const char* GetCategoryGroup(Environment* env, const Local<Value>& catego
 
 // Gets a list of categories from a string or string array value.
 static std::vector<std::string> GetCategoryList(Environment* env, const Local<Value>& categoryValue) {
+    std::vector<std::string> categoryList;
+
     if (categoryValue->IsString()) {
-        std::vector<std::string> categoryList(1);
         Utf8Value category(env->isolate(), categoryValue);
+        categoryList.reserve(1);
         categoryList.emplace_back(category.out());
-        return categoryList;
     }
     else {
         CHECK(categoryValue->IsArray());
         Local<Array> categoryArray = Local<Array>::Cast(categoryValue);
         uint32_t categoryCount = categoryArray->Length();
-
-        std::vector<std::string> categoryList;
         categoryList.reserve(categoryCount);
 
         for (uint32_t i = 0; i < categoryCount; i++) {
@@ -93,9 +92,9 @@ static std::vector<std::string> GetCategoryList(Environment* env, const Local<Va
             Utf8Value category(env->isolate(), categoryArray->Get(i));
             categoryList.emplace_back(category.out());
         }
-
-        return categoryList;
     }
+
+    return categoryList;
 }
 
 static void EmitInstantEvent(const FunctionCallbackInfo<Value>& args) {
@@ -150,9 +149,26 @@ static void EmitCountEvent(const FunctionCallbackInfo<Value>& args) {
 
   // args: name, id, category, args, timestamp?
   CHECK(args[0]->IsString());
-  Utf8Value name(env->isolate(), args[0]);
-fprintf(stderr, "EmitCountEvent(%s)\n", name.out());
+  Utf8Value nameValue(env->isolate(), args[0]);
+  const char* name = nameValue.out();
 
+  const char* categoryGroup = GetCategoryGroup(env, args[2]);
+
+  if (args[4]->IsDate()) {
+      // TODO: Timestamps are ignored because the _WITH_TIMESTAMP tracing macro variants are
+      // currently unimplemented in Node.
+  }
+
+  if (args[3]->IsNumber()) {
+      // TODO: Get value
+      int32_t value = args[3]->Int32Value();
+////fprintf(stderr, "EmitCountEvent(%s, %d)\n", name, value);
+      TRACE_COPY_COUNTER1(categoryGroup, name, value);
+  }
+  else if (args[3]->IsArray()) {
+      // TODO: Get args
+      fprintf(stderr, "EmitCountEvent(%s)\n", name);
+  }
 }
 
 static void AddListenerCategory(const FunctionCallbackInfo<Value>& args) {

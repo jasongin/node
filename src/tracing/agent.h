@@ -19,10 +19,9 @@ class Agent {
   void SetCategories(const char* category_list);
   void Start();
   void Stop();
-  bool IsStarted() { return thread_ != 0; }
+  bool IsStarted() { return started_; }
 
  private:
-  bool IsInitialized() { return platform_ != nullptr; }
   static void ThreadCb(void* arg);
 
   uv_thread_t thread_;
@@ -31,6 +30,7 @@ class Agent {
   Environment* parent_env_;
   std::vector<std::string> categories_;
   TracingController* tracing_controller_;
+  bool started_;
 };
 
 }  // namespace tracing

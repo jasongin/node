@@ -4451,9 +4451,9 @@ inline int Start(Isolate* isolate, IsolateData* isolate_data,
       return 12;  // Signal internal error.
   }
 
-  // Enable tracing when argv has --enable-tracing.
   env.tracing_agent()->Initialize(v8_platform.platform_);
   if (trace_enabled) {
+    // Start tracing when argv has --enable-tracing.
     env.tracing_agent()->SetCategories(trace_enabled_categories);
     env.tracing_agent()->Start();
   }

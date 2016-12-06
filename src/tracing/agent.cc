@@ -12,10 +12,9 @@ namespace tracing {
 using v8::platform::tracing::TraceConfig;
 
 Agent::Agent(Environment* env)
-  : parent_env_(env),
-    platform_(nullptr),
-    tracing_controller_(nullptr),
-    thread_(0) {
+    : parent_env_(env),
+      thread_(0),
+      started_(false) {
 }
 
 void Agent::Initialize(v8::Platform* platform) {
@@ -27,11 +26,15 @@ void Agent::Initialize(v8::Platform* platform) {
   NodeTraceWriter* trace_writer = new NodeTraceWriter(&tracing_loop_);
   TraceBuffer* trace_buffer = new NodeTraceBuffer(
       NodeTraceBuffer::kBufferChunks, trace_writer, &tracing_loop_);
-
   tracing_controller_ = new TracingController();
-
   tracing_controller_->Initialize(trace_buffer);
   v8::platform::SetTracingController(platform, tracing_controller_);
+
+  // This thread should be created *after* async handles are created
+  // (within NodeTraceWriter and NodeTraceBuffer constructors).
+  // Otherwise the thread could shut down prematurely.
+  err = uv_thread_create(&thread_, ThreadCb, this);
+  CHECK_EQ(err, 0);
 }
 
 void Agent::SetCategories(const std::vector<std::string>& category_list) {
@@ -76,15 +79,8 @@ void Agent::Start() {
     trace_config->AddIncludedCategory(category.c_str());
   }
 
-  if (!IsStarted()) {
-    // This thread should be created *after* async handles are created
-    // (within NodeTraceWriter and NodeTraceBuffer constructors).
-    // Otherwise the thread could shut down prematurely.
-    int err = uv_thread_create(&thread_, ThreadCb, this);
-    CHECK_EQ(err, 0);
-  }
-
   tracing_controller_->StartTracing(trace_config);
+  started_ = true;
 }
 
 void Agent::Stop() {
@@ -92,12 +88,7 @@ void Agent::Stop() {
     // Perform final Flush on TraceBuffer. We don't want the tracing controller
     // to flush the buffer again on destruction of the V8::Platform.
     tracing_controller_->StopTracing();
-
-    // Thread should finish when the tracing loop is stopped.
-    int err = uv_thread_join(&thread_);
-    CHECK_EQ(err, 0);
-
-    thread_ = 0;
+    started_ = false;
   }
 }
 
@@ -108,10 +99,19 @@ void Agent::ThreadCb(void* arg) {
 }
 
 Agent::~Agent() {
-  if (tracing_controller_) {
-    Stop();
+  Stop();
+
+  if (thread_ != 0) {
     v8::platform::SetTracingController(platform_, nullptr);
     delete tracing_controller_;
+
+    int err = uv_loop_close(&tracing_loop_);
+    CHECK_EQ(err, 0);
+
+    // Thread should finish when the tracing loop is stopped.
+    err = uv_thread_join(&thread_);
+    CHECK_EQ(err, 0);
+    thread_ = 0;
   }
 }
 
