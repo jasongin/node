@@ -2,29 +2,42 @@
 const assert = require('assert');
 const common = require('../common.js');
 
+const trace = console.tracing.emit;
+const traceCount = console.count;
+
 let scenarios = {
     disabled(n) {
-        doWork(n, 'test1');
+        traceBench(n, 'test1');
     },
     singleCategoryDisabled(n) {
         console.tracing.enableRecording('test2');
-        doWork(n, 'test1');
+        traceBench(n, 'test1');
     },
     multiCategoryDisabled(n) {
         console.tracing.enableRecording('test3');
-        doWork(n, ['test1', 'test2']);
+        traceBench(n, ['test1', 'test2']);
     },
     singleCategoryEnabled(n) {
         console.tracing.enableRecording('test1');
-        doWork(n, 'test1');
+        traceBench(n, 'test1');
     },
     firstCategoryEnabled(n) {
         console.tracing.enableRecording('test1');
-        doWork(n, ['test1', 'test2']);
+        traceBench(n, ['test1', 'test2']);
     },
     secondCategoryEnabled(n) {
         console.tracing.enableRecording('test2');
-        doWork(n, ['test1', 'test2']);
+        traceBench(n, ['test1', 'test2']);
+    },
+    singleCategoryEnabledCount(n) {
+        console.tracing.enableRecording('test1');
+        console.tracing.options.logConsoleTracingEvents = false;
+        traceCountBench(n, 'test1');
+    },
+    secondCategoryEnabledCount(n) {
+        console.tracing.enableRecording('test2');
+        console.tracing.options.logConsoleTracingEvents = false;
+        traceCountBench(n, ['test1', 'test2']);
     },
 };
 
@@ -33,7 +46,7 @@ const bench = common.createBenchmark(main, {
 });
 
 function main(conf) {
-  let n = 10000;
+  let n = 1000000;
   let scenarioName = conf.scenario;
   let scenarioFn = scenarios[scenarioName] || function () {};
   bench.start();
@@ -41,16 +54,19 @@ function main(conf) {
   bench.end(n);
 }
 
-function doWork(n, emitCategory) {
+function traceBench(n, category) {
     for (let i = 0; i < n; i++) {
-        let value = Math.round(Math.sqrt(i) * Math.sqrt(i));
-        if (emitCategory) {
-            console.tracing.emit({
-                eventType: 'count',
-                name: 'benchmark',
-                category: emitCategory,
-                value,
-            });
-        }
+        trace({
+            eventType: 'count',
+            name: 'benchmark',
+            category,
+            value: i,
+        });
+    }
+}
+
+function traceCountBench(n, category) {
+    for (let i = 0; i < n; i++) {
+        traceCount('benchmark', i, null, category);
     }
 }

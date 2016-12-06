@@ -7,6 +7,7 @@
 #include "env-inl.h"
 #include "util.h"
 #include "util-inl.h"
+#include "tracing/agent.h"
 
 #include "v8.h"
 
@@ -30,6 +31,8 @@ using v8::Number;
 using v8::Object;
 using v8::String;
 using v8::Value;
+
+extern tracing::Agent* tracing_agent;
 
 
 // The tracing APIs require category groups to be pointers to long-lived strings.
@@ -162,12 +165,13 @@ static void EmitCountEvent(const FunctionCallbackInfo<Value>& args) {
   if (args[3]->IsNumber()) {
       // TODO: Get value
       int32_t value = args[3]->Int32Value();
-////fprintf(stderr, "EmitCountEvent(%s, %d)\n", name, value);
+      ////fprintf(stderr, "EmitCountEvent(%s, %d, [%s])\n", name, value, categoryGroup);
       TRACE_COPY_COUNTER1(categoryGroup, name, value);
   }
-  else if (args[3]->IsArray()) {
+  else {
+      CHECK(args[3]->IsObject());
       // TODO: Get args
-      fprintf(stderr, "EmitCountEvent(%s)\n", name);
+      ////fprintf(stderr, "EmitCountEvent(%s, [%s])\n", name, categoryGroup);
   }
 }
 
@@ -192,7 +196,7 @@ static void RemoveListenerCategory(const FunctionCallbackInfo<Value>& args) {
 static void GetEnabledCategories(const FunctionCallbackInfo<Value>& args) {
     Environment* env = Environment::GetCurrent(args);
 
-    const std::vector<std::string>& categories = env->tracing_agent()->GetCategories();
+    const std::vector<std::string>& categories = tracing_agent->GetCategories();
 
     Local<Object> categoryMap = Object::New(env->isolate());
     for (uint32_t i = 0; i < categories.size(); i++) {
@@ -202,7 +206,7 @@ static void GetEnabledCategories(const FunctionCallbackInfo<Value>& args) {
         Local<Value> flags = Integer::New(env->isolate(), 1);
         categoryMap->Set(category, flags);
     }
-    
+
     args.GetReturnValue().Set(categoryMap);
 }
 
@@ -218,13 +222,13 @@ static void EnableCategory(const FunctionCallbackInfo<Value>& args) {
     // TODO: Invoke onchange callback (if any categories or flags changed).
 
     if (categories.size() > 0) {
-        env->tracing_agent()->SetCategories(categories);
-        if (!env->tracing_agent()->IsStarted()) {
-            env->tracing_agent()->Start();
+        tracing_agent->SetCategories(categories);
+        if (!tracing_agent->IsStarted()) {
+            tracing_agent->Start();
         }
     }
     else {
-        env->tracing_agent()->Stop();
+        tracing_agent->Stop();
     }
 }
 

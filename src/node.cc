@@ -199,7 +199,7 @@ static uv_async_t dispatch_debug_messages_async;
 
 static Mutex node_isolate_mutex;
 static v8::Isolate* node_isolate;
-static tracing::Agent* tracing_agent;
+tracing::Agent* tracing_agent;
 
 static struct {
 #if NODE_USE_V8_PLATFORM
@@ -4451,13 +4451,6 @@ inline int Start(Isolate* isolate, IsolateData* isolate_data,
       return 12;  // Signal internal error.
   }
 
-  env.tracing_agent()->Initialize(v8_platform.platform_);
-  if (trace_enabled) {
-    // Start tracing when argv has --enable-tracing.
-    env.tracing_agent()->SetCategories(trace_enabled_categories);
-    env.tracing_agent()->Start();
-  }
-
   {
     Environment::AsyncCallbackScope callback_scope(&env);
     LoadEnvironment(&env);
@@ -4580,12 +4573,12 @@ int Start(int argc, char** argv) {
 #endif
 
   v8_platform.Initialize(v8_thread_pool_size);
-  // Enable tracing when argv has --trace-events-enabled.
+  tracing_agent = new tracing::Agent(v8_platform.platform_);
   if (trace_enabled) {
     fprintf(stderr, "Warning: Trace event is an experimental feature "
             "and could change at any time.\n");
-    tracing_agent = new tracing::Agent();
-    tracing_agent->Start(v8_platform.platform_, trace_enabled_categories);
+    tracing_agent->SetCategories(trace_enabled_categories);
+    tracing_agent->Start();
   }
   V8::Initialize();
   v8_initialized = true;
