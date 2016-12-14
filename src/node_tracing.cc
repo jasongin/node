@@ -26,7 +26,7 @@ using v8::Context;
 using v8::FunctionCallbackInfo;
 using v8::FunctionTemplate;
 using v8::HandleScope;
-using v8::Integer;
+using v8::Int32;
 using v8::Local;
 using v8::MaybeLocal;
 using v8::Number;
@@ -130,217 +130,140 @@ static bool GetCategoryList(
   return true;
 }
 
-
-static inline bool ValidateEventName(Environment* env, const Local<Value>& arg) {
-  if (!arg->IsString()) {
-    env->ThrowTypeError("Trace event name must be a string.");
-    return false;
-  }
-  return true;
-}
-
-
-static inline bool ValidateEventId(Environment* env, const Local<Value>& arg) {
-  if (!arg->IsString() && !arg->IsUndefined()) {
-    env->ThrowTypeError("Trace event id must be a string or undefined.");
-    return false;
-  }
-  return true;
-}
-
-
-static int64_t GetTimestamp(Environment* env, Local<Value>& arg) {
-  if (arg->IsDate()) {
-    // TODO: Get timestamp value from Date arg.
-    // Timestamps are ignored for now because the _WITH_TIMESTAMP tracing macro variants are
-    // currently unimplemented in the v8 tracing code.
+static inline char GetPhase(Environment* env, const Local<Value>& arg) {
+  if (!arg->IsNumber()) {
+    env->ThrowTypeError("Trace event type must be a number.");
     return 0;
   }
-  else if (!arg->IsUndefined()) {
-    env->ThrowTypeError("Trace event timestamp must be a Date or undefined.");
-    return -1;
+  Local<Context> context = env->isolate()->GetCurrentContext();
+  return static_cast<char>(arg->Int32Value(context).ToChecked());
+}
+
+static inline const char* GetName(Environment* env, const Local<Value>& arg) {
+  if (!arg->IsString()) {
+    env->ThrowTypeError("Trace event name must be a string.");
+    return nullptr;
+  }
+  Utf8Value nameValue(env->isolate(), arg);
+  return nameValue.out();
+}
+
+static inline bool GetId(Environment* env, const Local<Value>& arg, int64_t& id) {
+  if (arg->IsUndefined() || arg->IsNull()) {
+    id = 0;
+    return true;
+  }
+  else if (arg->IsNumber()) {
+    Local<Context> context = env->isolate()->GetCurrentContext();
+    id = arg->IntegerValue(context).ToChecked();
+    return true;
+  }
+  else {
+    env->ThrowTypeError("Trace event id must be a number or undefined.");
+    return false;
   }
 }
 
-// Gets one or two name-value pairs from an args object.
-static void TraceWithArgs(
-    Environment* env,
-    Local<Object>& args,
-    std::function<void(int num_args, const char** arg_names, const uint8_t* arg_types, const uint64_t* arg_values)> traceFunc) {
-  Local<Context> context = env->isolate()->GetCurrentContext();
-  Local<Array> argNames = args->GetPropertyNames(context).ToLocalChecked();
+static inline bool GetArgValue(
+  Environment* env,
+  const Local<Context>& context,
+  const Local<Value>& value,
+  uint8_t& arg_type,
+  uint64_t& arg_value) {
+  // TODO: Get the appropriate type and value. Copy string values.
+  arg_type = TRACE_VALUE_TYPE_INT;
+  arg_value = 0;
+  return true;
+}
 
-  if (argNames->Length() == 0) {
-      env->ThrowTypeError("Trace event args object must contain properties.");
-      return;
-  }
+static void Emit(const FunctionCallbackInfo<Value>& args) {
+  Environment* env = Environment::GetCurrent(args);
 
-  Local<String> arg1Name = Local<String>::Cast(argNames->Get(context, 0).ToLocalChecked());
-  Local<Value> arg1Value = args->Get(context, arg1Name).ToLocalChecked();
+  // Args: [type, name, id, category, args]
+  CHECK_EQ(args.Length(), 5);
 
-  int num_args = 1;
+  // Check the category group first, to avoid doing more work if it's not enabled.
+  const char* categoryGroup = GetCategoryGroup(env, args[3]);
+  const uint8_t* categoryGroupEnabled = GetCategoryGroupEnabled(categoryGroup);
+  if (categoryGroupEnabled == nullptr) return;
+
+  char phase = GetPhase(env, args[0]);
+  if (phase == 0) return;
+
+  const char* name = GetName(env, args[1]);
+  if (name == nullptr) return;
+
+  int64_t id;
+  if (!GetId(env, args[2], id)) return;
+
+  int32_t num_args;
   const char* arg_names[2];
   uint8_t arg_types[2];
   uint64_t arg_values[2];
+  const char* scope = nullptr;
 
-  //arg_names[0] = 
-
-  if (argNames->Length() >= 2) {
-      Local<String> arg2Name = Local<String>::Cast(argNames->Get(context, 1).ToLocalChecked());
-      Local<Value> arg2Value = args->Get(context, arg2Name).ToLocalChecked();
-  
-      //arg_names[1] = 
-
+  if (args[4]->IsUndefined()) {
+    num_args = 0;
   }
+  else if (args[4]->IsObject()) {
+    Local<Context> context = env->isolate()->GetCurrentContext();
+    Local<Object> obj = Local<Object>::Cast(args[4]);
+    Local<Array> argNames = obj->GetPropertyNames(context).ToLocalChecked();
 
-  traceFunc(num_args, arg_names, arg_types, arg_values);
-}
+    if (argNames->Length() == 0) {
+      num_args = 0;
+    }
+    else {
+      Local<String> arg1Name = Local<String>::Cast(argNames->Get(context, 0).ToLocalChecked());
+      Utf8Value arg1NameValue(env->isolate(), arg1Name);
+      arg_names[0] = arg1NameValue.out();
 
-static void EmitInstantEvent(const FunctionCallbackInfo<Value>& args) {
-  Environment* env = Environment::GetCurrent(args);
+      Local<Value> arg1Value = obj->Get(context, arg1Name).ToLocalChecked();
+      if (!GetArgValue(env, context, arg1Value, arg_types[0], arg_values[0])) return;
 
-  // Args: [name, id, category, args, timestamp]
-  // (The id arg is currently ignored, but included here for consistency with other event types.)
-  CHECK_EQ(args.Length(), 4);
+      if (argNames->Length() < 2) {
+        num_args = 1;
+      }
+      else {
+        num_args = 2;
+        Local<String> arg2Name = Local<String>::Cast(argNames->Get(context, 1).ToLocalChecked());
+        Utf8Value arg2NameValue(env->isolate(), arg2Name);
+        arg_names[1] = arg2NameValue.out();
 
-  const char* categoryGroup = GetCategoryGroup(env, args[2]);
-  const uint8_t* categoryGroupEnabled = GetCategoryGroupEnabled(categoryGroup);
-  if (categoryGroupEnabled == nullptr) return;
-
-  if (!ValidateEventName(env, args[0])) return;
-  Utf8Value nameValue(env->isolate(), args[0]);
-  const char* name = nameValue.out();
-
-  int64_t timestamp = GetTimestamp(env, args[4]);
-  if (timestamp < 0) return;
-
-  if (args[3]->IsUndefined()) {
-    TRACE_EVENT_COPY_INSTANT0(categoryGroup, name, TRACE_EVENT_SCOPE_PROCESS);
+        Local<Value> arg2Value = obj->Get(context, arg2Name).ToLocalChecked();
+        if (!GetArgValue(env, context, arg2Value, arg_types[1], arg_values[1])) return;
+      }
+    }
   }
-  else if (args[3]->IsObject()) {
-    Local<Object> obj = Local<Object>::Cast(args[1]);
-    TraceWithArgs(env, Local<Object>::Cast(args[1]), [name, categoryGroupEnabled](
-        int num_args, const char** arg_names, const uint8_t* arg_types, const uint64_t* arg_values) {
-      TRACE_EVENT_API_ADD_TRACE_EVENT(
-        TRACE_EVENT_PHASE_INSTANT,
-        categoryGroupEnabled,
-        name,
-        nullptr,
-        0,
-        0,
-        num_args,
-        arg_names,
-        arg_types,
-        arg_values,
-        0);
-    });
+  else if (args[4]->IsNumber()) {
+    num_args = 1;
+    Local<Context> context = env->isolate()->GetCurrentContext();
+    arg_names[0] = "value";
+    arg_types[0] = TRACE_VALUE_TYPE_INT;
+    arg_values[0] = args[4]->Int32Value(context).ToChecked();
   }
   else {
-    env->ThrowTypeError("Trace event args must be an object or undefined.");
-  }
-}
-
-static void EmitBeginEvent(const FunctionCallbackInfo<Value>& args) {
-  Environment* env = Environment::GetCurrent(args);
-
-  // Args: [name, id, category, args, timestamp]
-  CHECK_EQ(args.Length(), 4);
-
-  const char* categoryGroup = GetCategoryGroup(env, args[2]);
-  const uint8_t* categoryGroupEnabled = GetCategoryGroupEnabled(categoryGroup);
-  if (categoryGroupEnabled == nullptr) return;
-
-  if (!ValidateEventName(env, args[0])) return;
-  Utf8Value nameValue(env->isolate(), args[0]);
-  const char* name = nameValue.out();
-
-  if (!ValidateEventId(env, args[1])) return;
-  Utf8Value idValue(env->isolate(), args[1]);
-  const char* id = idValue.out();
-  if (id == nullptr) {
-      id = name;
+    env->ThrowTypeError("Trace event args must be an object, number, or undefined.");
+    return;
   }
 
-  int64_t timestamp = GetTimestamp(env, args[4]);
-  if (timestamp < 0) return;
-
-  if (args[3]->IsUndefined()) {
-      TRACE_EVENT_COPY_ASYNC_BEGIN0(categoryGroup, name, id);
-  }
-  else if (args[3]->IsObject()) {
-      // TODO: TRACE_EVENT_COPY_ASYNC_BEGIN1 or TRACE_EVENT_COPY_ASYNC_BEGIN2 with args
-      TRACE_EVENT_COPY_ASYNC_BEGIN0(categoryGroup, name, id);
-  }
-  else {
-      env->ThrowTypeError("Trace event args must be an object or undefined.");
-  }
-}
-
-static void EmitEndEvent(const FunctionCallbackInfo<Value>& args) {
-  Environment* env = Environment::GetCurrent(args);
-
-  // Args: [name, id, category, args, timestamp]
-  CHECK_EQ(args.Length(), 4);
-
-  const char* categoryGroup = GetCategoryGroup(env, args[2]);
-  const uint8_t* categoryGroupEnabled = GetCategoryGroupEnabled(categoryGroup);
-  if (categoryGroupEnabled == nullptr) return;
-
-  if (!ValidateEventName(env, args[0])) return;
-  Utf8Value nameValue(env->isolate(), args[0]);
-  const char* name = nameValue.out();
-
-  if (!ValidateEventId(env, args[1])) return;
-  Utf8Value idValue(env->isolate(), args[1]);
-  const char* id = idValue.out();
-  if (id == nullptr) {
-      id = name;
+  uint32_t flags = TRACE_EVENT_FLAG_COPY;
+  if (id != 0) {
+    flags |= TRACE_EVENT_FLAG_HAS_ID;
   }
 
-  int64_t timestamp = GetTimestamp(env, args[4]);
-  if (timestamp < 0) return;
-
-  if (args[3]->IsUndefined()) {
-      TRACE_EVENT_COPY_ASYNC_END0(categoryGroup, name, id);
-  }
-  else if (args[3]->IsObject()) {
-      // TODO: TRACE_EVENT_COPY_ASYNC_END1 or TRACE_EVENT_COPY_ASYNC_END2 with args
-      TRACE_EVENT_COPY_ASYNC_END0(categoryGroup, name, id);
-  }
-  else {
-      env->ThrowTypeError("Trace event args must be an object or undefined.");
-  }
-}
-
-static void EmitCountEvent(const FunctionCallbackInfo<Value>& args) {
-  Environment* env = Environment::GetCurrent(args);
-
-  // Args: [name, id, category, args, timestamp]
-  // (The id arg is currently ignored, but included here for consistency with other event types.)
-  CHECK_EQ(args.Length(), 4);
-
-  const char* categoryGroup = GetCategoryGroup(env, args[2]);
-  const uint8_t* categoryGroupEnabled = GetCategoryGroupEnabled(categoryGroup);
-  if (categoryGroupEnabled == nullptr) return;
-
-  if (!ValidateEventName(env, args[0])) return;
-  Utf8Value nameValue(env->isolate(), args[0]);
-  const char* name = nameValue.out();
-
-  int64_t timestamp = GetTimestamp(env, args[4]);
-  if (timestamp < 0) return;
-
-  if (args[3]->IsNumber()) {
-      int32_t value = args[3]->Int32Value();
-      TRACE_COPY_COUNTER1(categoryGroup, name, value);
-  }
-  else if (args[3]->IsObject()) {
-      // TODO: Get args
-  }
-  else {
-      env->ThrowTypeError("Trace count value must be a number or object.");
-      return;
-  }
+  TRACE_EVENT_API_ADD_TRACE_EVENT(
+    phase,
+    categoryGroupEnabled,
+    name,
+    scope,
+    id,
+    0,
+    num_args,
+    arg_names,
+    arg_types,
+    arg_values,
+    flags);
 }
 
 static void AddListenerCategory(const FunctionCallbackInfo<Value>& args) {
@@ -361,28 +284,32 @@ static void RemoveListenerCategory(const FunctionCallbackInfo<Value>& args) {
   // TODO: Remove listener category.
 }
 
+static Local<Object> GetCategoryMap(Environment* env) {
+  const std::vector<std::string>& categories = tracing_agent->GetCategories();
+
+  Local<Object> categoryMap = Object::New(env->isolate());
+  for (uint32_t i = 0; i < categories.size(); i++) {
+    Local<Value> category = String::NewFromUtf8(env->isolate(), categories[i].c_str());
+
+    // TODO: CategoryGroupEnabledFlags
+    Local<Value> flags = Int32::New(env->isolate(), 1);
+    categoryMap->Set(category, flags);
+  }
+
+  return categoryMap;
+}
+
 static void GetEnabledCategories(const FunctionCallbackInfo<Value>& args) {
     Environment* env = Environment::GetCurrent(args);
-
-    const std::vector<std::string>& categories = tracing_agent->GetCategories();
-
-    Local<Object> categoryMap = Object::New(env->isolate());
-    for (uint32_t i = 0; i < categories.size(); i++) {
-        Local<Value> category = String::NewFromUtf8(env->isolate(), categories[i].c_str());
-
-        // TODO: CategoryGroupEnabledFlags
-        Local<Value> flags = Integer::New(env->isolate(), 1);
-        categoryMap->Set(category, flags);
-    }
-
-    args.GetReturnValue().Set(categoryMap);
+    args.GetReturnValue().Set(GetCategoryMap(env));
 }
 
 static void EnableCategory(const FunctionCallbackInfo<Value>& args) {
     Environment* env = Environment::GetCurrent(args);
+    Local<Context> context = env->isolate()->GetCurrentContext();
 
-    std::vector<std::string> categories;
-    if (!GetCategoryList(env, args[0], categories)) {
+    std::vector<std::string> changeCategories;
+    if (!GetCategoryList(env, args[0], changeCategories)) {
         return;
     }
 
@@ -391,19 +318,41 @@ static void EnableCategory(const FunctionCallbackInfo<Value>& args) {
         return;
     }
 
-    Local<Integer> enabledFlags = Local<Integer>::Cast(args[1]);
+    // TODO: Separately enable recording and callback flags when the agent config supports that.
+    int32_t enableFlags = Local<Int32>::Cast(args[1])->Int32Value(context).ToChecked();
+    bool enable = enableFlags != 0;
 
-    // TODO: Use categories and enabled flags to update categories to flags map.
-    // TODO: Invoke onchange callback (if any categories or flags changed).
+    bool changed = false;
+    std::vector<std::string> categories(tracing_agent->GetCategories());
 
-    if (categories.size() > 0) {
-        tracing_agent->SetCategories(categories);
-        if (!tracing_agent->IsStarted()) {
-            tracing_agent->Start();
-        }
+    for (const std::string& setCategory : changeCategories) {
+      auto foundCategory = std::find(categories.begin(), categories.end(), setCategory);
+      if (enable && foundCategory == categories.end()) {
+        categories.push_back(setCategory);
+        changed = true;
+      }
+      else if (!enable && foundCategory != categories.end()) {
+        categories.erase(foundCategory);
+        changed = true;
+      }
     }
-    else {
+
+    if (changed) {
+      tracing_agent->SetCategories(categories);
+
+      // Notify script that the enabled categories changed.
+      Local<Value> argv[1];
+      argv[0] = GetCategoryMap(env);
+      MakeCallback(env, args.Holder(), env->onchange_string(), 1, argv);
+
+      if (categories.size() > 0) {
+        if (!tracing_agent->IsStarted()) {
+          tracing_agent->Start();
+        }
+      }
+      else {
         tracing_agent->Stop();
+      }
     }
 }
 
@@ -413,10 +362,7 @@ void InitTracing(Local<Object> target,
                  void* priv) {
   Environment* env = Environment::GetCurrent(context);
 
-  env->SetMethod(target, "emitBeginEvent", EmitBeginEvent);
-  env->SetMethod(target, "emitEndEvent", EmitEndEvent);
-  env->SetMethod(target, "emitInstantEvent", EmitInstantEvent);
-  env->SetMethod(target, "emitCountEvent", EmitCountEvent);
+  env->SetMethod(target, "emit", Emit);
   env->SetMethod(target, "addListenerCategory", AddListenerCategory);
   env->SetMethod(target, "removeListenerCategory", RemoveListenerCategory);
   env->SetMethod(target, "getEnabledCategories", GetEnabledCategories);

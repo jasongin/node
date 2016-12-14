@@ -79,16 +79,11 @@ interface TracingEvent {
     name: string;
 
     /**
-     * Optional string identifier that is used to correlate paired "begin" and "end"" events and
-     * distinguish them from other events with the same name. Not used for other event types.
+     * Optional integer identifier that is used to correlate paired "begin" and "end" events or
+     * multiple "count" events and distinguish them from other events with the same name. Not used
+     * with "instant" events.
      */
-    id?: string;
-
-    /**
-     * Optional specific time for any type of tracing event; if unspecified then the current time
-     * is recorded.
-     */
-    timestamp?: Date;
+    id?: number;
 
     /**
      * Optional for "count" events; not used for other event types. If unspecified for a "count"
@@ -239,8 +234,8 @@ interface Console {
      * it sets the value of the single-value counter. For a multi-value counter, this is must be a
      * dictionary object containing 2 name-value pairs. (The tracing system currently requires
      * multi-value counters to have exactly two values.)
-     * @param [id] Optional identifier that can be used to distinguish count events from others
-     * with the same name.
+     * @param [id] Optional integer identifier that can be used to correlate multiple "count"
+     * events and distinguish them from others with the same name.
      * @param [category] Optional category name or array of category names for the tracing event.
      * If unspecified, then Console.defaultTracingCategory is used.
      *
@@ -249,7 +244,7 @@ interface Console {
      */
     count(name: string,
         value?: number | { [name: string]: number },
-        id?: string,
+        id?: number,
         category?: string | string[]): void;
 
     /**
@@ -259,9 +254,8 @@ interface Console {
      * corresponding timeEnd() is called.
      *
      * @param name Required name of the timer.
-     * @param [id] Optional identifier that can be used to correlate begin and end events and
-     * distinguish them from other events with the same name. If unspecified, the name is used as
-     * the id.
+     * @param [id] Optional integer identifier that can be used to correlate "begin" and "end"
+     * events and distinguish them from other events with the same name.
      * @param [category] Optional category name or array of category names for the tracing event.
      * If unspecified, then Console.defaultTracingCategory is used.
      * @param [args] Optional additional arguments for the trace event. This can be a string,
@@ -273,7 +267,7 @@ interface Console {
      * @see {@link https://developer.mozilla.org/en-US/docs/Web/API/Console/time}
      */
     time(name: string,
-        id?: string,
+        id?: number,
         category?: string | string[],
         args?: string | { [name: string]: any } | (() => string | { [name: string]: any })): void;
 
@@ -284,9 +278,8 @@ interface Console {
      * console, regardless of whether tracing is enabled for any category.
      *
      * @param name Required name of the timer; must match the name from a prior call to time().
-     * @param [id] Optional identifier that can be used to correlate timer begin and end events and
-     * distinguish them from other timer events with the same name. If unspecified, the name is
-     * used as the id.
+     * @param [id] Optional integer identifier that can be used to correlate "begin" and "end"
+     * events and distinguish them from other events with the same name.
      * @param [category] Optional category name or array of category names for the tracing event.
      * If unspecified, then Console.defaultTracingCategory is used.
      * @param [args] Optional additional arguments for the trace event. This can be a string,
@@ -298,7 +291,7 @@ interface Console {
      * @see {@link https://developer.mozilla.org/en-US/docs/Web/API/Console/timeEnd}
      */
     timeEnd(name: string,
-        id?: string,
+        id?: number,
         category?: string | string[],
         args?: string | { [name: string]: any } | (() => string | { [name: string]: any })): void;
 
