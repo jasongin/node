@@ -48,7 +48,7 @@ static const uint8_t* GetCategoryGroupEnabled(const char* categoryGroup) {
     static TRACE_EVENT_API_ATOMIC_WORD categoryGroupAtomic;
     const uint8_t* categoryGroupEnabled;
     INTERNAL_TRACE_EVENT_GET_CATEGORY_INFO_CUSTOM_VARIABLES(categoryGroup, categoryGroupAtomic, categoryGroupEnabled);
-    
+
     if (!(*categoryGroupEnabled &
         (kEnabledForRecording_CategoryGroupEnabledFlags | kEnabledForEventCallback_CategoryGroupEnabledFlags))) {
         return nullptr;
@@ -179,22 +179,22 @@ static inline bool GetArgValue(
 static void Emit(const FunctionCallbackInfo<Value>& args) {
   Environment* env = Environment::GetCurrent(args);
 
-  // Args: [type, name, id, category, args]
-  CHECK_EQ(args.Length(), 5);
+  // Args: [type, category, name, id, args]
+  CHECK_GE(args.Length(), 3);
 
   // Check the category group first, to avoid doing more work if it's not enabled.
-  const char* categoryGroup = GetCategoryGroup(env, args[3]);
+  const char* categoryGroup = GetCategoryGroup(env, args[1]);
   const uint8_t* categoryGroupEnabled = GetCategoryGroupEnabled(categoryGroup);
   if (categoryGroupEnabled == nullptr) return;
 
   char phase = GetPhase(env, args[0]);
   if (phase == 0) return;
 
-  const char* name = GetName(env, args[1]);
+  const char* name = GetName(env, args[2]);
   if (name == nullptr) return;
 
-  int64_t id;
-  if (!GetId(env, args[2], id)) return;
+  int64_t id = 0;
+  if (args.Length() >= 4 && !GetId(env, args[3], id)) return;
 
   int32_t num_args;
   const char* arg_names[2];
@@ -202,7 +202,7 @@ static void Emit(const FunctionCallbackInfo<Value>& args) {
   uint64_t arg_values[2];
   const char* scope = nullptr;
 
-  if (args[4]->IsUndefined()) {
+  if (args.Length() < 5 || args[4]->IsUndefined()) {
     num_args = 0;
   }
   else if (args[4]->IsObject()) {
