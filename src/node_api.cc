@@ -1399,49 +1399,71 @@ napi_status napi_create_symbol(napi_env env,
 }
 
 napi_status napi_create_error(napi_env env,
-                              napi_value msg,
+                              const char* code,
+                              const char* msg,
                               napi_value* result) {
   NAPI_PREAMBLE(env);
   CHECK_ARG(env, msg);
   CHECK_ARG(env, result);
 
-  v8::Local<v8::Value> message_value = v8impl::V8LocalValueFromJsValue(msg);
-  RETURN_STATUS_IF_FALSE(env, message_value->IsString(), napi_string_expected);
+  v8::Local<v8::String> msg_str;
+  CHECK_NEW_FROM_UTF8(env, msg_str, msg);
 
-  *result = v8impl::JsValueFromV8LocalValue(v8::Exception::Error(
-      message_value.As<v8::String>()));
+  v8::Local<v8::Value> error_value;
+  if (code != nullptr) {
+    v8::Local<v8::String> code_str;
+    CHECK_NEW_FROM_UTF8(env, code_str, code);
 
+    // Format the message with the code prefix.
+    v8::Local<v8::String> separator_str;
+    CHECK_NEW_FROM_UTF8(env, separator_str, ": ");
+    msg_str = v8::String::Concat(separator_str, msg_str);
+    msg_str = v8::String::Concat(code_str, msg_str);
+
+    error_value = v8::Exception::Error(msg_str);
+
+    // Set the "code" property on the error object.
+    v8::Local<v8::String> code_key;
+    CHECK_NEW_FROM_UTF8(env, code_key, "code");
+    v8::Local<v8::Object> error_object = error_value->ToObject(env->isolate);
+    v8::Local<v8::Context> context = env->isolate->GetCurrentContext();
+    v8::Maybe<bool> set_maybe = error_object->Set(context, code_key, code_str);
+    RETURN_STATUS_IF_FALSE(
+      env, set_maybe.FromMaybe(false), napi_generic_failure);
+  } else {
+    error_value = v8::Exception::Error(msg_str);
+  }
+
+  *result = v8impl::JsValueFromV8LocalValue(error_value);
   return GET_RETURN_STATUS(env);
 }
 
 napi_status napi_create_type_error(napi_env env,
-                                   napi_value msg,
+                                   const char* msg,
                                    napi_value* result) {
   NAPI_PREAMBLE(env);
   CHECK_ARG(env, msg);
   CHECK_ARG(env, result);
 
-  v8::Local<v8::Value> message_value = v8impl::V8LocalValueFromJsValue(msg);
-  RETURN_STATUS_IF_FALSE(env, message_value->IsString(), napi_string_expected);
+  v8::Local<v8::String> msg_str;
+  CHECK_NEW_FROM_UTF8(env, msg_str, msg);
 
-  *result = v8impl::JsValueFromV8LocalValue(v8::Exception::TypeError(
-      message_value.As<v8::String>()));
+  *result = v8impl::JsValueFromV8LocalValue(v8::Exception::TypeError(msg_str));
 
   return GET_RETURN_STATUS(env);
 }
 
 napi_status napi_create_range_error(napi_env env,
-                                    napi_value msg,
+                                    const char* msg,
                                     napi_value* result) {
   NAPI_PREAMBLE(env);
   CHECK_ARG(env, msg);
   CHECK_ARG(env, result);
 
-  v8::Local<v8::Value> message_value = v8impl::V8LocalValueFromJsValue(msg);
-  RETURN_STATUS_IF_FALSE(env, message_value->IsString(), napi_string_expected);
+  v8::Local<v8::String> msg_str;
+  CHECK_NEW_FROM_UTF8(env, msg_str, msg);
 
-  *result = v8impl::JsValueFromV8LocalValue(v8::Exception::RangeError(
-      message_value.As<v8::String>()));
+  *result = v8impl::JsValueFromV8LocalValue(v8::Exception::RangeError(msg_str));
 
   return GET_RETURN_STATUS(env);
 }
@@ -1614,14 +1636,16 @@ napi_status napi_throw(napi_env env, napi_value error) {
   return napi_clear_last_error(env);
 }
 
-napi_status napi_throw_error(napi_env env, const char* msg) {
+napi_status napi_throw_error(napi_env env, const char* code, const char* msg) {
   NAPI_PREAMBLE(env);
 
-  v8::Isolate* isolate = env->isolate;
-  v8::Local<v8::String> str;
-  CHECK_NEW_FROM_UTF8(env, str, msg);
+  napi_value error;
+  napi_status status = napi_create_error(env, code, msg, &error);
+  if (status != napi_ok) {
+    return status;
+  }
 
-  isolate->ThrowException(v8::Exception::Error(str));
+  env->isolate->ThrowException(v8impl::V8LocalValueFromJsValue(error));
   // any VM calls after this point and before returning
   // to the javascript invoker will fail
   return napi_clear_last_error(env);

@@ -142,13 +142,14 @@ NAPI_EXTERN napi_status napi_create_function(napi_env env,
                                              void* data,
                                              napi_value* result);
 NAPI_EXTERN napi_status napi_create_error(napi_env env,
-                                          napi_value msg,
+                                          const char* code,
+                                          const char* msg,
                                           napi_value* result);
 NAPI_EXTERN napi_status napi_create_type_error(napi_env env,
-                                               napi_value msg,
+                                               const char* msg,
                                                napi_value* result);
 NAPI_EXTERN napi_status napi_create_range_error(napi_env env,
-                                                napi_value msg,
+                                                const char* msg,
                                                 napi_value* result);
 
 // Methods to get the the native napi_value from Primitive type
@@ -392,7 +393,9 @@ NAPI_EXTERN napi_status napi_escape_handle(napi_env env,
 
 // Methods to support error handling
 NAPI_EXTERN napi_status napi_throw(napi_env env, napi_value error);
-NAPI_EXTERN napi_status napi_throw_error(napi_env env, const char* msg);
+NAPI_EXTERN napi_status napi_throw_error(napi_env env,
+                                         const char* code,
+                                         const char* msg);
 NAPI_EXTERN napi_status napi_throw_type_error(napi_env env, const char* msg);
 NAPI_EXTERN napi_status napi_throw_range_error(napi_env env, const char* msg);
 NAPI_EXTERN napi_status napi_is_error(napi_env env,
