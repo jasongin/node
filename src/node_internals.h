@@ -30,6 +30,7 @@
 #include "uv.h"
 #include "v8.h"
 #include "tracing/trace_event.h"
+#include "node_api_internals.h"
 
 #include <stdint.h>
 #include <stdlib.h>
