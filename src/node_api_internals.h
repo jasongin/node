@@ -43,6 +43,10 @@ inline v8::Local<v8::Value> V8LocalValueFromJsValue(napi_value v) {
   return local;
 }
 
+inline v8::Isolate* V8IsolateFromNapiEnv(napi_env env) {
+  return env->isolate;
+}
+
 }  // namespace node_api
 
 #endif  // SRC_NODE_API_INTERNALS_H_

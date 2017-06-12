@@ -24,6 +24,8 @@
 #include "node_internals.h"
 #include "node_stat_watcher.h"
 
+#include "napi_adapters.h"
+
 #include "env.h"
 #include "env-inl.h"
 #include "req-wrap.h"
@@ -47,36 +49,29 @@
 namespace node {
 namespace {
 
-using v8::Array;
-using v8::ArrayBuffer;
-using v8::Context;
-using v8::Float64Array;
-using v8::Function;
-using v8::FunctionCallbackInfo;
-using v8::FunctionTemplate;
-using v8::HandleScope;
-using v8::Integer;
-using v8::Local;
-using v8::MaybeLocal;
-using v8::Number;
-using v8::Object;
-using v8::String;
-using v8::Value;
-
 #ifndef MIN
 # define MIN(a, b) ((a) < (b) ? (a) : (b))
 #endif
 
-#define TYPE_ERROR(msg) env->ThrowTypeError(msg)
+#define THROW_ERROR(msg) \
+  Napi::TypeError::New(args.Env(), msg).ThrowAsJavaScriptException(), \
+  Napi::Value()
+#define THROW_TYPE_ERROR(msg) \
+  Napi::TypeError::New(args.Env(), msg).ThrowAsJavaScriptException(), \
+  Napi::Value()
+#define THROW_RANGE_ERROR(msg) \
+  Napi::RangeError::New(args.Env(), msg).ThrowAsJavaScriptException(), \
+  Napi::Value()
 
-#define GET_OFFSET(a) ((a)->IsNumber() ? (a)->IntegerValue() : -1)
+#define GET_OFFSET(a) \
+  ((a).IsNumber() ? (a).As<Napi::Number>().Int64Value() : -1)
 
 class FSReqWrap: public ReqWrap<uv_fs_t> {
  public:
   enum Ownership { COPY, MOVE };
 
-  inline static FSReqWrap* New(Environment* env,
-                               Local<Object> req,
+  inline static FSReqWrap* New(Napi::Env env,
+                               Napi::Object req,
                                const char* syscall,
                                const char* data = nullptr,
                                enum encoding encoding = UTF8,
@@ -97,13 +92,19 @@ class FSReqWrap: public ReqWrap<uv_fs_t> {
 
   size_t self_size() const override { return sizeof(*this); }
 
+  Napi::Env napi_env() const { return napi_env_; }
+
  private:
-  FSReqWrap(Environment* env,
-            Local<Object> req,
+  FSReqWrap(Napi::Env env,
+            Napi::Object req,
             const char* syscall,
             const char* data,
             enum encoding encoding)
-      : ReqWrap(env, req, AsyncWrap::PROVIDER_FSREQWRAP),
+      : ReqWrap(
+          Environment::GetCurrent(node_api::V8IsolateFromNapiEnv(env)),
+          node_api::V8LocalValueFromJsValue(req).As<v8::Object>(),
+          AsyncWrap::PROVIDER_FSREQWRAP),
+        napi_env_(env),
         encoding_(encoding),
         syscall_(syscall),
         data_(data) {
@@ -122,15 +123,17 @@ class FSReqWrap: public ReqWrap<uv_fs_t> {
   const char* syscall_;
   const char* data_;
 
+  Napi::Env napi_env_;
+
   DISALLOW_COPY_AND_ASSIGN(FSReqWrap);
 };
 
 #define ASSERT_PATH(path)                                                   \
   if (*path == nullptr)                                                     \
-    return TYPE_ERROR( #path " must be a string or Buffer");
+    return THROW_TYPE_ERROR( #path " must be a string or Buffer");
 
-FSReqWrap* FSReqWrap::New(Environment* env,
-                          Local<Object> req,
+FSReqWrap* FSReqWrap::New(Napi::Env env,
+                          Napi::Object req,
                           const char* syscall,
                           const char* data,
                           enum encoding encoding,
@@ -152,7 +155,7 @@ void FSReqWrap::Dispose() {
 }
 
 
-void NewFSReqWrap(const FunctionCallbackInfo<Value>& args) {
+void NewFSReqWrap(const v8::FunctionCallbackInfo<v8::Value>& args) {
   CHECK(args.IsConstructCall());
   ClearWrap(args.This());
 }
@@ -167,30 +170,34 @@ void After(uv_fs_t *req) {
   CHECK_EQ(req_wrap->req(), req);
   req_wrap->ReleaseEarly();  // Free memory that's no longer used now.
 
-  Environment* env = req_wrap->env();
-  HandleScope handle_scope(env->isolate());
-  Context::Scope context_scope(env->context());
+  Napi::Env env = req_wrap->napi_env();
+  Napi::HandleScope handle_scope(env);
+
+  // TODO: Is this necessary?
+  //Context::Scope context_scope(env->context());
+
+  node_api::NodeEnvironment node_env(env);
 
   // there is always at least one argument. "error"
   int argc = 1;
 
   // Allocate space for two args. We may only use one depending on the case.
   // (Feel free to increase this if you need more)
-  Local<Value> argv[2];
-  MaybeLocal<Value> link;
-  Local<Value> error;
+  napi_value argv[2];
+  Napi::Value link;
+  Napi::Value error;
 
   if (req->result < 0) {
     // An error happened.
-    argv[0] = UVException(env->isolate(),
-                          req->result,
-                          req_wrap->syscall(),
-                          nullptr,
-                          req->path,
-                          req_wrap->data());
+    argv[0] = node_api::UVException(env,
+                                    static_cast<int>(req->result),
+                                    req_wrap->syscall(),
+                                    nullptr,
+                                    req->path,
+                                    req_wrap->data());
   } else {
     // error value is empty or null for non-error.
-    argv[0] = Null(env->isolate());
+    argv[0] = env.Null();
 
     // All have at least two args now.
     argc = 2;
@@ -220,7 +227,7 @@ void After(uv_fs_t *req) {
       case UV_FS_LSTAT:
       case UV_FS_FSTAT:
         argc = 1;
-        FillStatsArray(env->fs_stats_field_array(),
+        FillStatsArray(node_env.fs_stats_field_array(),
                        static_cast<const uv_stat_t*>(req->ptr));
         break;
 
@@ -230,80 +237,80 @@ void After(uv_fs_t *req) {
         break;
 
       case UV_FS_OPEN:
-        argv[1] = Integer::New(env->isolate(), req->result);
+        argv[1] = Napi::Number::New(env, static_cast<int64_t>(req->result));
         break;
 
       case UV_FS_WRITE:
-        argv[1] = Integer::New(env->isolate(), req->result);
+        argv[1] = Napi::Number::New(env, static_cast<int64_t>(req->result));
         break;
 
       case UV_FS_MKDTEMP:
       {
-        link = StringBytes::Encode(env->isolate(),
+        link = node_api::EncodeString(env,
                                    static_cast<const char*>(req->path),
                                    req_wrap->encoding_,
                                    &error);
         if (link.IsEmpty()) {
           // TODO(addaleax): Use `error` itself here.
-          argv[0] = UVException(env->isolate(),
+          argv[0] = node_api::UVException(env,
                                 UV_EINVAL,
                                 req_wrap->syscall(),
                                 "Invalid character encoding for filename",
                                 req->path,
                                 req_wrap->data());
         } else {
-          argv[1] = link.ToLocalChecked();
+          argv[1] = link;
         }
         break;
       }
 
       case UV_FS_READLINK:
-        link = StringBytes::Encode(env->isolate(),
+        link = node_api::EncodeString(env,
                                    static_cast<const char*>(req->ptr),
                                    req_wrap->encoding_,
                                    &error);
         if (link.IsEmpty()) {
           // TODO(addaleax): Use `error` itself here.
-          argv[0] = UVException(env->isolate(),
+          argv[0] = node_api::UVException(env,
                                 UV_EINVAL,
                                 req_wrap->syscall(),
                                 "Invalid character encoding for link",
                                 req->path,
                                 req_wrap->data());
         } else {
-          argv[1] = link.ToLocalChecked();
+          argv[1] = link;
         }
         break;
 
       case UV_FS_REALPATH:
-        link = StringBytes::Encode(env->isolate(),
+        link = node_api::EncodeString(env,
                                    static_cast<const char*>(req->ptr),
                                    req_wrap->encoding_,
                                    &error);
         if (link.IsEmpty()) {
           // TODO(addaleax): Use `error` itself here.
-          argv[0] = UVException(env->isolate(),
+          argv[0] = node_api::UVException(env,
                                 UV_EINVAL,
                                 req_wrap->syscall(),
                                 "Invalid character encoding for link",
                                 req->path,
                                 req_wrap->data());
         } else {
-          argv[1] = link.ToLocalChecked();
+          argv[1] = link;
         }
         break;
 
       case UV_FS_READ:
         // Buffer interface
-        argv[1] = Integer::New(env->isolate(), req->result);
+        argv[1] = Napi::Number::New(env, static_cast<int64_t>(req->result));
         break;
 
       case UV_FS_SCANDIR:
         {
           int r;
-          Local<Array> names = Array::New(env->isolate(), 0);
-          Local<Function> fn = env->push_values_to_array_function();
-          Local<Value> name_argv[NODE_PUSH_VAL_TO_ARRAY_MAX];
+          Napi::Array names = Napi::Array::New(env, 0);
+          Napi::Function fn = node_env.push_values_to_array_function();
+          napi_value name_argv[NODE_PUSH_VAL_TO_ARRAY_MAX];
           size_t name_idx = 0;
 
           for (int i = 0; ; i++) {
@@ -313,21 +320,21 @@ void After(uv_fs_t *req) {
             if (r == UV_EOF)
               break;
             if (r != 0) {
-              argv[0] = UVException(r,
+              argv[0] = node_api::UVException(env,
+                                    r,
                                     nullptr,
                                     req_wrap->syscall(),
                                     static_cast<const char*>(req->path));
               break;
             }
 
-            MaybeLocal<Value> filename =
-                StringBytes::Encode(env->isolate(),
+            Napi::Value filename = node_api::EncodeString(env,
                                     ent.name,
                                     req_wrap->encoding_,
                                     &error);
             if (filename.IsEmpty()) {
               // TODO(addaleax): Use `error` itself here.
-              argv[0] = UVException(env->isolate(),
+              argv[0] = node_api::UVException(env,
                                     UV_EINVAL,
                                     req_wrap->syscall(),
                                     "Invalid character encoding for filename",
@@ -335,18 +342,16 @@ void After(uv_fs_t *req) {
                                     req_wrap->data());
               break;
             }
-            name_argv[name_idx++] = filename.ToLocalChecked();
+            name_argv[name_idx++] = filename;
 
             if (name_idx >= arraysize(name_argv)) {
-              fn->Call(env->context(), names, name_idx, name_argv)
-                  .ToLocalChecked();
+              fn.Call(names, name_idx, name_argv);
               name_idx = 0;
             }
           }
 
           if (name_idx > 0) {
-            fn->Call(env->context(), names, name_idx, name_argv)
-                .ToLocalChecked();
+            fn.Call(names, name_idx, name_argv);
           }
 
           argv[1] = names;
@@ -358,7 +363,11 @@ void After(uv_fs_t *req) {
     }
   }
 
-  req_wrap->MakeCallback(env->oncomplete_string(), argc, argv);
+  node_api::MakeAsyncCallback(
+    req_wrap,
+    node_env.oncomplete_string(),
+    argc,
+    argv);
 
   uv_fs_req_cleanup(req_wrap->req());
   req_wrap->Dispose();
@@ -378,11 +387,10 @@ class fs_req_wrap {
 
 
 #define ASYNC_DEST_CALL(func, request, dest, encoding, ...)                   \
-  Environment* env = Environment::GetCurrent(args);                           \
-  CHECK(request->IsObject());                                                 \
-  FSReqWrap* req_wrap = FSReqWrap::New(env, request.As<Object>(),             \
+  CHECK(request.IsObject());                                                  \
+  FSReqWrap* req_wrap = FSReqWrap::New(args.Env(), request.As<Napi::Object>(),\
                                        #func, dest, encoding);                \
-  int err = uv_fs_ ## func(env->event_loop(),                                 \
+  int err = uv_fs_ ## func(node_env.event_loop(),                             \
                            req_wrap->req(),                                   \
                            __VA_ARGS__,                                       \
                            After);                                            \
@@ -393,8 +401,10 @@ class fs_req_wrap {
     uv_req->path = nullptr;                                                   \
     After(uv_req);                                                            \
     req_wrap = nullptr;                                                       \
+    return Napi::Value();                                                     \
   } else {                                                                    \
-    args.GetReturnValue().Set(req_wrap->persistent());                        \
+    return Napi::Value(args.Env(),                                            \
+                       node_api::JsValueFromV8LocalValue(req_wrap->object()));\
   }
 
 #define ASYNC_CALL(func, req, encoding, ...)                                  \
@@ -402,58 +412,61 @@ class fs_req_wrap {
 
 #define SYNC_DEST_CALL(func, path, dest, ...)                                 \
   fs_req_wrap req_wrap;                                                       \
-  env->PrintSyncTrace();                                                      \
-  int err = uv_fs_ ## func(env->event_loop(),                                 \
-                         &req_wrap.req,                                       \
-                         __VA_ARGS__,                                         \
-                         nullptr);                                            \
+  node_env.PrintSyncTrace();                                                  \
+  int err = uv_fs_ ## func(node_env.event_loop(),                             \
+                           &req_wrap.req,                                     \
+                           __VA_ARGS__,                                       \
+                           nullptr);                                          \
   if (err < 0) {                                                              \
-    return env->ThrowUVException(err, #func, nullptr, path, dest);            \
-  }                                                                           \
+    Napi::Value ex = node_api::UVException(                                   \
+      args.Env(), err, #func, nullptr, path, dest);                           \
+    ex.As<Napi::Error>().ThrowAsJavaScriptException();                        \
+  }
 
 #define SYNC_CALL(func, path, ...)                                            \
   SYNC_DEST_CALL(func, path, nullptr, __VA_ARGS__)                            \
 
 #define SYNC_REQ req_wrap.req
 
-#define SYNC_RESULT err
+#define SYNC_RESULT Napi::Number::New(args.Env(), err)
 
-void Access(const FunctionCallbackInfo<Value>& args) {
-  Environment* env = Environment::GetCurrent(args.GetIsolate());
-  HandleScope scope(env->isolate());
-
+Napi::Value Access(const Napi::CallbackInfo& args) {
   if (args.Length() < 2)
-    return TYPE_ERROR("path and mode are required");
-  if (!args[1]->IsInt32())
-    return TYPE_ERROR("mode must be an integer");
+    return THROW_TYPE_ERROR("path and mode are required");
+  if (!args[1].IsNumber())
+    return THROW_TYPE_ERROR("mode must be an integer");
 
-  BufferValue path(env->isolate(), args[0]);
+  Napi::HandleScope scope(args.Env());
+  node_api::NodeEnvironment node_env(args.Env());
+
+  BufferValue path = node_api::BufferValue(args.Env(), args[0]);
   ASSERT_PATH(path)
 
-  int mode = static_cast<int>(args[1]->Int32Value());
+  int mode = static_cast<int>(args[1].As<Napi::Number>().Int32Value());
 
-  if (args[2]->IsObject()) {
+  if (args[2].IsObject()) {
     ASYNC_CALL(access, args[2], UTF8, *path, mode);
   } else {
     SYNC_CALL(access, *path, *path, mode);
+    return Napi::Value();
   }
 }
 
 
-void Close(const FunctionCallbackInfo<Value>& args) {
-  Environment* env = Environment::GetCurrent(args);
-
+Napi::Value Close(const Napi::CallbackInfo& args) {
   if (args.Length() < 1)
-    return TYPE_ERROR("fd is required");
-  if (!args[0]->IsInt32())
-    return TYPE_ERROR("fd must be a file descriptor");
+    return THROW_TYPE_ERROR("fd is required");
+  if (!args[0].IsNumber())
+    return THROW_TYPE_ERROR("fd must be a file descriptor");
 
-  int fd = args[0]->Int32Value();
+  node_api::NodeEnvironment node_env(args.Env());
+  int fd = args[0].As<Napi::Number>().Int32Value();
 
-  if (args[1]->IsObject()) {
+  if (args[1].IsObject()) {
     ASYNC_CALL(close, args[1], UTF8, fd)
   } else {
     SYNC_CALL(close, 0, fd)
+    return Napi::Value();
   }
 }
 
@@ -493,19 +506,19 @@ void FillStatsArray(double* fields, const uv_stat_t* s) {
 // Used to speed up module loading.  Returns the contents of the file as
 // a string or undefined when the file cannot be opened.  The speedup
 // comes from not creating Error objects on failure.
-static void InternalModuleReadFile(const FunctionCallbackInfo<Value>& args) {
-  Environment* env = Environment::GetCurrent(args);
-  uv_loop_t* loop = env->event_loop();
+static Napi::Value InternalModuleReadFile(const Napi::CallbackInfo& args) {
+  node_api::NodeEnvironment node_env(args.Env());
+  uv_loop_t* loop = node_env.event_loop();
 
-  CHECK(args[0]->IsString());
-  node::Utf8Value path(env->isolate(), args[0]);
+  CHECK(args[0].IsString());
+  std::string path = args[0].As<Napi::String>();
 
   uv_fs_t open_req;
-  const int fd = uv_fs_open(loop, &open_req, *path, O_RDONLY, 0, nullptr);
+  const int fd = uv_fs_open(loop, &open_req, path.c_str(), O_RDONLY, 0, nullptr);
   uv_fs_req_cleanup(&open_req);
 
   if (fd < 0) {
-    return;
+    return Napi::Value();
   }
 
   const size_t kBlockSize = 32 << 10;
@@ -537,386 +550,405 @@ static void InternalModuleReadFile(const FunctionCallbackInfo<Value>& args) {
     start = 3;  // Skip UTF-8 BOM.
   }
 
-  Local<String> chars_string =
-      String::NewFromUtf8(env->isolate(),
-                          &chars[start],
-                          String::kNormalString,
-                          offset - start);
-  args.GetReturnValue().Set(chars_string);
+  return Napi::String::New(args.Env(),
+                           &chars[start],
+                           offset - start);
 }
 
 // Used to speed up module loading.  Returns 0 if the path refers to
 // a file, 1 when it's a directory or < 0 on error (usually -ENOENT.)
 // The speedup comes from not creating thousands of Stat and Error objects.
-static void InternalModuleStat(const FunctionCallbackInfo<Value>& args) {
-  Environment* env = Environment::GetCurrent(args);
+static Napi::Value InternalModuleStat(const Napi::CallbackInfo& args) {
+  node_api::NodeEnvironment node_env(args.Env());
 
-  CHECK(args[0]->IsString());
-  node::Utf8Value path(env->isolate(), args[0]);
+  CHECK(args[0].IsString());
+  std::string path = args[0].As<Napi::String>();
 
   uv_fs_t req;
-  int rc = uv_fs_stat(env->event_loop(), &req, *path, nullptr);
+  int rc = uv_fs_stat(node_env.event_loop(), &req, path.c_str(), nullptr);
   if (rc == 0) {
     const uv_stat_t* const s = static_cast<const uv_stat_t*>(req.ptr);
     rc = !!(s->st_mode & S_IFDIR);
   }
   uv_fs_req_cleanup(&req);
 
-  args.GetReturnValue().Set(rc);
+  return Napi::Number::New(args.Env(), rc);
 }
 
-static void Stat(const FunctionCallbackInfo<Value>& args) {
-  Environment* env = Environment::GetCurrent(args);
+static Napi::Value Stat(const Napi::CallbackInfo& args) {
+  node_api::NodeEnvironment node_env(args.Env());
 
   if (args.Length() < 1)
-    return TYPE_ERROR("path required");
+    return THROW_TYPE_ERROR("path required");
 
-  BufferValue path(env->isolate(), args[0]);
+  BufferValue path = node_api::BufferValue(args.Env(), args[0]);
   ASSERT_PATH(path)
 
-  if (args[1]->IsObject()) {
+  if (args[1].IsObject()) {
     ASYNC_CALL(stat, args[1], UTF8, *path)
   } else {
     SYNC_CALL(stat, *path, *path)
-    FillStatsArray(env->fs_stats_field_array(),
+    FillStatsArray(node_env.fs_stats_field_array(),
                    static_cast<const uv_stat_t*>(SYNC_REQ.ptr));
+    return Napi::Value();
   }
 }
 
-static void LStat(const FunctionCallbackInfo<Value>& args) {
-  Environment* env = Environment::GetCurrent(args);
+static Napi::Value LStat(const Napi::CallbackInfo& args) {
+  node_api::NodeEnvironment node_env(args.Env());
 
   if (args.Length() < 1)
-    return TYPE_ERROR("path required");
+    return THROW_TYPE_ERROR("path required");
 
-  BufferValue path(env->isolate(), args[0]);
+  BufferValue path = node_api::BufferValue(args.Env(), args[0]);
   ASSERT_PATH(path)
 
-  if (args[1]->IsObject()) {
+  if (args[1].IsObject()) {
     ASYNC_CALL(lstat, args[1], UTF8, *path)
   } else {
     SYNC_CALL(lstat, *path, *path)
-    FillStatsArray(env->fs_stats_field_array(),
+    FillStatsArray(node_env.fs_stats_field_array(),
                    static_cast<const uv_stat_t*>(SYNC_REQ.ptr));
+    return Napi::Value();
   }
 }
 
-static void FStat(const FunctionCallbackInfo<Value>& args) {
-  Environment* env = Environment::GetCurrent(args);
+static Napi::Value FStat(const Napi::CallbackInfo& args) {
+  node_api::NodeEnvironment node_env(args.Env());
 
   if (args.Length() < 1)
-    return TYPE_ERROR("fd is required");
-  if (!args[0]->IsInt32())
-    return TYPE_ERROR("fd must be a file descriptor");
+    return THROW_TYPE_ERROR("fd is required");
+  if (!args[0].IsNumber())
+    return THROW_TYPE_ERROR("fd must be a file descriptor");
 
-  int fd = args[0]->Int32Value();
+  int fd = args[0].As<Napi::Number>().Int32Value();
 
-  if (args[1]->IsObject()) {
+  if (args[1].IsObject()) {
     ASYNC_CALL(fstat, args[1], UTF8, fd)
   } else {
     SYNC_CALL(fstat, nullptr, fd)
-    FillStatsArray(env->fs_stats_field_array(),
+    FillStatsArray(node_env.fs_stats_field_array(),
                    static_cast<const uv_stat_t*>(SYNC_REQ.ptr));
+    return Napi::Value();
   }
 }
 
-static void Symlink(const FunctionCallbackInfo<Value>& args) {
-  Environment* env = Environment::GetCurrent(args);
+static Napi::Value Symlink(const Napi::CallbackInfo& args) {
+  node_api::NodeEnvironment node_env(args.Env());
 
   int len = args.Length();
   if (len < 1)
-    return TYPE_ERROR("target path required");
+    return THROW_TYPE_ERROR("target path required");
   if (len < 2)
-    return TYPE_ERROR("src path required");
+    return THROW_TYPE_ERROR("src path required");
 
-  BufferValue target(env->isolate(), args[0]);
+  BufferValue target = node_api::BufferValue(args.Env(), args[0]);
   ASSERT_PATH(target)
-  BufferValue path(env->isolate(), args[1]);
+  BufferValue path = node_api::BufferValue(args.Env(), args[1]);
   ASSERT_PATH(path)
 
   int flags = 0;
 
-  if (args[2]->IsString()) {
-    node::Utf8Value mode(env->isolate(), args[2]);
-    if (strcmp(*mode, "dir") == 0) {
+  if (args[2].IsString()) {
+    std::string mode = args[2].As<Napi::String>();
+    if (mode == "dir") {
       flags |= UV_FS_SYMLINK_DIR;
-    } else if (strcmp(*mode, "junction") == 0) {
+    } else if (mode == "junction") {
       flags |= UV_FS_SYMLINK_JUNCTION;
-    } else if (strcmp(*mode, "file") != 0) {
-      return env->ThrowError("Unknown symlink type");
+    } else if (mode == "file") {
+      Napi::Error::New(args.Env(), "Unknown symlink type").ThrowAsJavaScriptException();
+      return Napi::Value();
     }
   }
 
-  if (args[3]->IsObject()) {
+  if (args[3].IsObject()) {
     ASYNC_DEST_CALL(symlink, args[3], *path, UTF8, *target, *path, flags)
   } else {
     SYNC_DEST_CALL(symlink, *target, *path, *target, *path, flags)
+    return Napi::Value();
   }
 }
 
-static void Link(const FunctionCallbackInfo<Value>& args) {
-  Environment* env = Environment::GetCurrent(args);
+static Napi::Value Link(const Napi::CallbackInfo& args) {
+  node_api::NodeEnvironment node_env(args.Env());
 
   int len = args.Length();
   if (len < 1)
-    return TYPE_ERROR("src path required");
+    return THROW_TYPE_ERROR("src path required");
   if (len < 2)
-    return TYPE_ERROR("dest path required");
+    return THROW_TYPE_ERROR("dest path required");
 
-  BufferValue src(env->isolate(), args[0]);
+  BufferValue src = node_api::BufferValue(args.Env(), args[0]);
   ASSERT_PATH(src)
 
-  BufferValue dest(env->isolate(), args[1]);
+  BufferValue dest = node_api::BufferValue(args.Env(), args[1]);
   ASSERT_PATH(dest)
 
-  if (args[2]->IsObject()) {
+  if (args[2].IsObject()) {
     ASYNC_DEST_CALL(link, args[2], *dest, UTF8, *src, *dest)
   } else {
     SYNC_DEST_CALL(link, *src, *dest, *src, *dest)
+    return Napi::Value();
   }
 }
 
-static void ReadLink(const FunctionCallbackInfo<Value>& args) {
-  Environment* env = Environment::GetCurrent(args);
+static Napi::Value ReadLink(const Napi::CallbackInfo& args) {
+  node_api::NodeEnvironment node_env(args.Env());
 
   const int argc = args.Length();
 
   if (argc < 1)
-    return TYPE_ERROR("path required");
+    return THROW_TYPE_ERROR("path required");
 
-  BufferValue path(env->isolate(), args[0]);
+  BufferValue path = node_api::BufferValue(args.Env(), args[0]);
   ASSERT_PATH(path)
 
-  const enum encoding encoding = ParseEncoding(env->isolate(), args[1], UTF8);
+  const enum encoding encoding =
+    node_api::ParseEncoding(args.Env(), args[1], UTF8);
 
-  Local<Value> callback = Null(env->isolate());
+  Napi::Value callback = args.Env().Null();
   if (argc == 3)
     callback = args[2];
 
-  if (callback->IsObject()) {
+  if (callback.IsObject()) {
     ASYNC_CALL(readlink, callback, encoding, *path)
   } else {
     SYNC_CALL(readlink, *path, *path)
     const char* link_path = static_cast<const char*>(SYNC_REQ.ptr);
 
-    Local<Value> error;
-    MaybeLocal<Value> rc = StringBytes::Encode(env->isolate(),
-                                               link_path,
-                                               encoding,
-                                               &error);
+    Napi::Value error;
+    Napi::String rc = node_api::EncodeString(args.Env(),
+                                             link_path,
+                                             encoding,
+                                             &error);
     if (rc.IsEmpty()) {
       // TODO(addaleax): Use `error` itself here.
-      return env->ThrowUVException(UV_EINVAL,
-                                   "readlink",
-                                   "Invalid character encoding for link",
-                                   *path);
+      Napi::Value ex = node_api::UVException(
+          args.Env(),
+          UV_EINVAL,
+          "readlink",
+          "Invalid character encoding for link",
+          *path);
+      ex.As<Napi::Error>().ThrowAsJavaScriptException();
     }
-    args.GetReturnValue().Set(rc.ToLocalChecked());
+    return rc;
   }
 }
 
-static void Rename(const FunctionCallbackInfo<Value>& args) {
-  Environment* env = Environment::GetCurrent(args);
+static Napi::Value Rename(const Napi::CallbackInfo& args) {
+  node_api::NodeEnvironment node_env(args.Env());
 
   int len = args.Length();
   if (len < 1)
-    return TYPE_ERROR("old path required");
+    return THROW_TYPE_ERROR("old path required");
   if (len < 2)
-    return TYPE_ERROR("new path required");
+    return THROW_TYPE_ERROR("new path required");
 
-  BufferValue old_path(env->isolate(), args[0]);
+  BufferValue old_path = node_api::BufferValue(args.Env(), args[0]);
   ASSERT_PATH(old_path)
-  BufferValue new_path(env->isolate(), args[1]);
+  BufferValue new_path = node_api::BufferValue(args.Env(), args[1]);
   ASSERT_PATH(new_path)
 
-  if (args[2]->IsObject()) {
+  if (args[2].IsObject()) {
     ASYNC_DEST_CALL(rename, args[2], *new_path, UTF8, *old_path, *new_path)
   } else {
     SYNC_DEST_CALL(rename, *old_path, *new_path, *old_path, *new_path)
+    return Napi::Value();
   }
 }
 
-static void FTruncate(const FunctionCallbackInfo<Value>& args) {
-  Environment* env = Environment::GetCurrent(args);
+static Napi::Value FTruncate(const Napi::CallbackInfo& args) {
+  node_api::NodeEnvironment node_env(args.Env());
 
   if (args.Length() < 2)
-    return TYPE_ERROR("fd and length are required");
-  if (!args[0]->IsInt32())
-    return TYPE_ERROR("fd must be a file descriptor");
+    return THROW_TYPE_ERROR("fd and length are required");
+  if (!args[0].IsNumber())
+    return THROW_TYPE_ERROR("fd must be a file descriptor");
 
-  int fd = args[0]->Int32Value();
+  int fd = args[0].As<Napi::Number>().Int32Value();
 
   // FIXME(bnoordhuis) It's questionable to reject non-ints here but still
   // allow implicit coercion from null or undefined to zero.  Probably best
   // handled in lib/fs.js.
-  Local<Value> len_v(args[1]);
-  if (!len_v->IsUndefined() &&
-      !len_v->IsNull() &&
-      !IsInt64(len_v->NumberValue())) {
-    return env->ThrowTypeError("Not an integer");
+  Napi::Value len_v = args[1];
+  if (!len_v.IsUndefined() &&
+      !len_v.IsNull() &&
+      !IsInt64(len_v.As<Napi::Number>().DoubleValue())) {
+    return THROW_TYPE_ERROR("Not an integer");
   }
 
-  const int64_t len = len_v->IntegerValue();
+  const int64_t len = len_v.As<Napi::Number>().Int64Value();
 
-  if (args[2]->IsObject()) {
+  if (args[2].IsObject()) {
     ASYNC_CALL(ftruncate, args[2], UTF8, fd, len)
   } else {
     SYNC_CALL(ftruncate, 0, fd, len)
+    return Napi::Value();
   }
 }
 
-static void Fdatasync(const FunctionCallbackInfo<Value>& args) {
-  Environment* env = Environment::GetCurrent(args);
+static Napi::Value Fdatasync(const Napi::CallbackInfo& args) {
+  node_api::NodeEnvironment node_env(args.Env());
 
   if (args.Length() < 1)
-    return TYPE_ERROR("fd is required");
-  if (!args[0]->IsInt32())
-    return TYPE_ERROR("fd must be a file descriptor");
+    return THROW_TYPE_ERROR("fd is required");
+  if (!args[0].IsNumber())
+    return THROW_TYPE_ERROR("fd must be a file descriptor");
 
-  int fd = args[0]->Int32Value();
+  int fd = args[0].As<Napi::Number>().Int32Value();
 
-  if (args[1]->IsObject()) {
+  if (args[1].IsObject()) {
     ASYNC_CALL(fdatasync, args[1], UTF8, fd)
   } else {
     SYNC_CALL(fdatasync, 0, fd)
+    return Napi::Value();
   }
 }
 
-static void Fsync(const FunctionCallbackInfo<Value>& args) {
-  Environment* env = Environment::GetCurrent(args);
+static Napi::Value Fsync(const Napi::CallbackInfo& args) {
+  node_api::NodeEnvironment node_env(args.Env());
 
   if (args.Length() < 1)
-    return TYPE_ERROR("fd is required");
-  if (!args[0]->IsInt32())
-    return TYPE_ERROR("fd must be a file descriptor");
+    return THROW_TYPE_ERROR("fd is required");
+  if (!args[0].IsNumber())
+    return THROW_TYPE_ERROR("fd must be a file descriptor");
 
-  int fd = args[0]->Int32Value();
+  int fd = args[0].As<Napi::Number>().Int32Value();
 
-  if (args[1]->IsObject()) {
+  if (args[1].IsObject()) {
     ASYNC_CALL(fsync, args[1], UTF8, fd)
   } else {
     SYNC_CALL(fsync, 0, fd)
+    return Napi::Value();
   }
 }
 
-static void Unlink(const FunctionCallbackInfo<Value>& args) {
-  Environment* env = Environment::GetCurrent(args);
+static Napi::Value Unlink(const Napi::CallbackInfo& args) {
+  node_api::NodeEnvironment node_env(args.Env());
 
   if (args.Length() < 1)
-    return TYPE_ERROR("path required");
+    return THROW_TYPE_ERROR("path required");
 
-  BufferValue path(env->isolate(), args[0]);
+  BufferValue path = node_api::BufferValue(args.Env(), args[0]);
   ASSERT_PATH(path)
 
-  if (args[1]->IsObject()) {
+  if (args[1].IsObject()) {
     ASYNC_CALL(unlink, args[1], UTF8, *path)
   } else {
     SYNC_CALL(unlink, *path, *path)
+    return Napi::Value();
   }
 }
 
-static void RMDir(const FunctionCallbackInfo<Value>& args) {
-  Environment* env = Environment::GetCurrent(args);
+static Napi::Value RMDir(const Napi::CallbackInfo& args) {
+  node_api::NodeEnvironment node_env(args.Env());
 
   if (args.Length() < 1)
-    return TYPE_ERROR("path required");
+    return THROW_TYPE_ERROR("path required");
 
-  BufferValue path(env->isolate(), args[0]);
+  BufferValue path = node_api::BufferValue(args.Env(), args[0]);
   ASSERT_PATH(path)
 
-  if (args[1]->IsObject()) {
+  if (args[1].IsObject()) {
     ASYNC_CALL(rmdir, args[1], UTF8, *path)
   } else {
     SYNC_CALL(rmdir, *path, *path)
+    return Napi::Value();
   }
 }
 
-static void MKDir(const FunctionCallbackInfo<Value>& args) {
-  Environment* env = Environment::GetCurrent(args);
+static Napi::Value MKDir(const Napi::CallbackInfo& args) {
+  node_api::NodeEnvironment node_env(args.Env());
 
   if (args.Length() < 2)
-    return TYPE_ERROR("path and mode are required");
-  if (!args[1]->IsInt32())
-    return TYPE_ERROR("mode must be an integer");
+    return THROW_TYPE_ERROR("path and mode are required");
+  if (!args[1].IsNumber())
+    return THROW_TYPE_ERROR("mode must be an integer");
 
-  BufferValue path(env->isolate(), args[0]);
+  BufferValue path = node_api::BufferValue(args.Env(), args[0]);
   ASSERT_PATH(path)
 
-  int mode = static_cast<int>(args[1]->Int32Value());
+  int mode = static_cast<int>(args[1].As<Napi::Number>().Int32Value());
 
-  if (args[2]->IsObject()) {
+  if (args[2].IsObject()) {
     ASYNC_CALL(mkdir, args[2], UTF8, *path, mode)
   } else {
     SYNC_CALL(mkdir, *path, *path, mode)
+    return Napi::Value();
   }
 }
 
-static void RealPath(const FunctionCallbackInfo<Value>& args) {
-  Environment* env = Environment::GetCurrent(args);
+static Napi::Value RealPath(const Napi::CallbackInfo& args) {
+  node_api::NodeEnvironment node_env(args.Env());
 
   const int argc = args.Length();
 
   if (argc < 1)
-    return TYPE_ERROR("path required");
+    return THROW_TYPE_ERROR("path required");
 
-  BufferValue path(env->isolate(), args[0]);
+  BufferValue path = node_api::BufferValue(args.Env(), args[0]);
   ASSERT_PATH(path)
 
-  const enum encoding encoding = ParseEncoding(env->isolate(), args[1], UTF8);
+  const enum encoding encoding =
+      node_api::ParseEncoding(args.Env(), args[1], UTF8);
 
-  Local<Value> callback = Null(env->isolate());
+  Napi::Value callback = args.Env().Null();
   if (argc == 3)
     callback = args[2];
 
-  if (callback->IsObject()) {
+  if (callback.IsObject()) {
     ASYNC_CALL(realpath, callback, encoding, *path);
   } else {
     SYNC_CALL(realpath, *path, *path);
     const char* link_path = static_cast<const char*>(SYNC_REQ.ptr);
 
-    Local<Value> error;
-    MaybeLocal<Value> rc = StringBytes::Encode(env->isolate(),
-                                               link_path,
-                                               encoding,
-                                               &error);
+    Napi::Value error;
+    Napi::String rc = node_api::EncodeString(args.Env(),
+                                             link_path,
+                                             encoding,
+                                             &error);
     if (rc.IsEmpty()) {
       // TODO(addaleax): Use `error` itself here.
-      return env->ThrowUVException(UV_EINVAL,
-                                   "realpath",
-                                   "Invalid character encoding for path",
-                                   *path);
+      Napi::Value ex = node_api::UVException(
+          args.Env(),
+          UV_EINVAL,
+          "realpath",
+          "Invalid character encoding for path",
+          *path);
+      ex.As<Napi::Error>().ThrowAsJavaScriptException();
     }
-    args.GetReturnValue().Set(rc.ToLocalChecked());
+    return rc;
   }
 }
 
-static void ReadDir(const FunctionCallbackInfo<Value>& args) {
-  Environment* env = Environment::GetCurrent(args);
+static Napi::Value ReadDir(const Napi::CallbackInfo& args) {
+  node_api::NodeEnvironment node_env(args.Env());
 
   const int argc = args.Length();
 
   if (argc < 1)
-    return TYPE_ERROR("path required");
+    return THROW_TYPE_ERROR("path required");
 
-  BufferValue path(env->isolate(), args[0]);
+  BufferValue path = node_api::BufferValue(args.Env(), args[0]);
   ASSERT_PATH(path)
 
-  const enum encoding encoding = ParseEncoding(env->isolate(), args[1], UTF8);
+  const enum encoding encoding =
+      node_api::ParseEncoding(args.Env(), args[1], UTF8);
 
-  Local<Value> callback = Null(env->isolate());
+  Napi::Value callback = args.Env().Null();
   if (argc == 3)
     callback = args[2];
 
-  if (callback->IsObject()) {
+  if (callback.IsObject()) {
     ASYNC_CALL(scandir, callback, encoding, *path, 0 /*flags*/)
   } else {
     SYNC_CALL(scandir, *path, *path, 0 /*flags*/)
 
     CHECK_GE(SYNC_REQ.result, 0);
     int r;
-    Local<Array> names = Array::New(env->isolate(), 0);
-    Local<Function> fn = env->push_values_to_array_function();
-    Local<Value> name_v[NODE_PUSH_VAL_TO_ARRAY_MAX];
+    Napi::Array names = Napi::Array::New(args.Env(), 0);
+    Napi::Function fn = node_env.push_values_to_array_function();
+    napi_value name_v[NODE_PUSH_VAL_TO_ARRAY_MAX];
     size_t name_idx = 0;
 
     for (int i = 0; ; i++) {
@@ -925,68 +957,76 @@ static void ReadDir(const FunctionCallbackInfo<Value>& args) {
       r = uv_fs_scandir_next(&SYNC_REQ, &ent);
       if (r == UV_EOF)
         break;
-      if (r != 0)
-        return env->ThrowUVException(r, "readdir", "", *path);
-
-      Local<Value> error;
-      MaybeLocal<Value> filename = StringBytes::Encode(env->isolate(),
-                                                       ent.name,
-                                                       encoding,
-                                                       &error);
-      if (filename.IsEmpty()) {
-        // TODO(addaleax): Use `error` itself here.
-        return env->ThrowUVException(UV_EINVAL,
-                                     "readdir",
-                                     "Invalid character encoding for filename",
-                                     *path);
+      if (r != 0) {
+        Napi::Value ex = node_api::UVException(args.Env(),
+                                               r,
+                                               "readdir",
+                                               "",
+                                               *path);
+        ex.As<Napi::Error>().ThrowAsJavaScriptException();
+        return Napi::Value();
       }
 
-      name_v[name_idx++] = filename.ToLocalChecked();
+      Napi::Value error;
+      Napi::String filename = node_api::EncodeString(args.Env(),
+                                                     ent.name,
+                                                     encoding,
+                                                     &error);
+      if (filename.IsEmpty()) {
+        // TODO(addaleax): Use `error` itself here.
+        Napi::Value ex = node_api::UVException(
+            args.Env(),
+            UV_EINVAL,
+            "readdir",
+            "Invalid character encoding for filename",
+            *path);
+        ex.As<Napi::Error>().ThrowAsJavaScriptException();
+      }
+
+      name_v[name_idx++] = filename;
 
       if (name_idx >= arraysize(name_v)) {
-        fn->Call(env->context(), names, name_idx, name_v)
-            .ToLocalChecked();
+        fn.Call(names, name_idx, name_v);
         name_idx = 0;
       }
     }
 
     if (name_idx > 0) {
-      fn->Call(env->context(), names, name_idx, name_v).ToLocalChecked();
+      fn.Call(names, name_idx, name_v);
     }
 
-    args.GetReturnValue().Set(names);
+    return names;
   }
 }
 
-static void Open(const FunctionCallbackInfo<Value>& args) {
-  Environment* env = Environment::GetCurrent(args);
+static Napi::Value Open(const Napi::CallbackInfo& args) {
+  node_api::NodeEnvironment node_env(args.Env());
 
   int len = args.Length();
   if (len < 1)
-    return TYPE_ERROR("path required");
+    return THROW_TYPE_ERROR("path required");
   if (len < 2)
-    return TYPE_ERROR("flags required");
+    return THROW_TYPE_ERROR("flags required");
   if (len < 3)
-    return TYPE_ERROR("mode required");
-  if (!args[1]->IsInt32())
-    return TYPE_ERROR("flags must be an int");
-  if (!args[2]->IsInt32())
-    return TYPE_ERROR("mode must be an int");
+    return THROW_TYPE_ERROR("mode required");
+  if (!args[1].IsNumber())
+    return THROW_TYPE_ERROR("flags must be an int");
+  if (!args[2].IsNumber())
+    return THROW_TYPE_ERROR("mode must be an int");
 
-  BufferValue path(env->isolate(), args[0]);
+  BufferValue path = node_api::BufferValue(args.Env(), args[0]);
   ASSERT_PATH(path)
 
-  int flags = args[1]->Int32Value();
-  int mode = static_cast<int>(args[2]->Int32Value());
+  int flags = args[1].As<Napi::Number>().Int32Value();
+  int mode = static_cast<int>(args[2].As<Napi::Number>().Int32Value());
 
-  if (args[3]->IsObject()) {
+  if (args[3].IsObject()) {
     ASYNC_CALL(open, args[3], UTF8, *path, flags, mode)
   } else {
     SYNC_CALL(open, *path, *path, flags, mode)
-    args.GetReturnValue().Set(SYNC_RESULT);
+    return SYNC_RESULT;
   }
 }
-
 
 // Wrapper for write(2).
 //
@@ -997,43 +1037,42 @@ static void Open(const FunctionCallbackInfo<Value>& args) {
 // 3 length    how much to write
 // 4 position  if integer, position to write at in the file.
 //             if null, write from the current position
-static void WriteBuffer(const FunctionCallbackInfo<Value>& args) {
-  Environment* env = Environment::GetCurrent(args);
+static Napi::Value WriteBuffer(const Napi::CallbackInfo& args) {
+  node_api::NodeEnvironment node_env(args.Env());
 
-  if (!args[0]->IsInt32())
-    return env->ThrowTypeError("First argument must be file descriptor");
+  if (!args[0].IsNumber())
+    return THROW_TYPE_ERROR("First argument must be file descriptor");
 
-  CHECK(Buffer::HasInstance(args[1]));
+  CHECK(args[1].IsBuffer());
 
-  int fd = args[0]->Int32Value();
-  Local<Object> obj = args[1].As<Object>();
-  const char* buf = Buffer::Data(obj);
-  size_t buffer_length = Buffer::Length(obj);
-  size_t off = args[2]->Uint32Value();
-  size_t len = args[3]->Uint32Value();
+  int fd = args[0].As<Napi::Number>().Int32Value();
+  Napi::Buffer<char> obj = args[1].As<Napi::Buffer<char>>();
+  const char* buf = obj.Data();
+  size_t buffer_length = obj.Length();
+  size_t off = args[2].As<Napi::Number>().Uint32Value();
+  size_t len = args[3].As<Napi::Number>().Uint32Value();
   int64_t pos = GET_OFFSET(args[4]);
-  Local<Value> req = args[5];
+  Napi::Value req = args[5];
 
   if (off > buffer_length)
-    return env->ThrowRangeError("offset out of bounds");
+    return THROW_RANGE_ERROR("offset out of bounds");
   if (len > buffer_length)
-    return env->ThrowRangeError("length out of bounds");
+    return THROW_RANGE_ERROR("length out of bounds");
   if (off + len < off)
-    return env->ThrowRangeError("off + len overflow");
+    return THROW_RANGE_ERROR("off + len overflow");
   if (!Buffer::IsWithinBounds(off, len, buffer_length))
-    return env->ThrowRangeError("off + len > buffer.length");
+    return THROW_RANGE_ERROR("off + len > buffer.length");
 
   buf += off;
 
   uv_buf_t uvbuf = uv_buf_init(const_cast<char*>(buf), len);
 
-  if (req->IsObject()) {
+  if (req.IsObject()) {
     ASYNC_CALL(write, req, UTF8, fd, &uvbuf, 1, pos)
-    return;
   }
 
   SYNC_CALL(write, nullptr, fd, &uvbuf, 1, pos)
-  args.GetReturnValue().Set(SYNC_RESULT);
+  return SYNC_RESULT;
 }
 
 
@@ -1044,37 +1083,38 @@ static void WriteBuffer(const FunctionCallbackInfo<Value>& args) {
 // 1 chunks    array of buffers to write
 // 2 position  if integer, position to write at in the file.
 //             if null, write from the current position
-static void WriteBuffers(const FunctionCallbackInfo<Value>& args) {
-  Environment* env = Environment::GetCurrent(args);
+static Napi::Value WriteBuffers(const Napi::CallbackInfo& args) {
+  node_api::NodeEnvironment node_env(args.Env());
 
-  CHECK(args[0]->IsInt32());
-  CHECK(args[1]->IsArray());
+  CHECK(args[0].IsNumber());
+  CHECK(args[1].IsArray());
 
-  int fd = args[0]->Int32Value();
-  Local<Array> chunks = args[1].As<Array>();
+  int fd = args[0].As<Napi::Number>().Int32Value();
+  Napi::Array chunks = args[1].As<Napi::Array>();
   int64_t pos = GET_OFFSET(args[2]);
-  Local<Value> req = args[3];
+  Napi::Value req = args[3];
 
-  MaybeStackBuffer<uv_buf_t> iovs(chunks->Length());
+  MaybeStackBuffer<uv_buf_t> iovs(chunks.Length());
 
   for (uint32_t i = 0; i < iovs.length(); i++) {
-    Local<Value> chunk = chunks->Get(i);
+    Napi::Value chunk = chunks[i];
 
-    if (!Buffer::HasInstance(chunk))
-      return env->ThrowTypeError("Array elements all need to be buffers");
+    if (!chunk.IsBuffer())
+      return THROW_TYPE_ERROR("Array elements all need to be buffers");
 
-    iovs[i] = uv_buf_init(Buffer::Data(chunk), Buffer::Length(chunk));
+    Napi::Buffer<char> chunk_buffer = chunk.As<Napi::Buffer<char>>();
+    iovs[i] = uv_buf_init(chunk_buffer.Data(), chunk_buffer.Length());
   }
 
-  if (req->IsObject()) {
+  if (req.IsObject()) {
     ASYNC_CALL(write, req, UTF8, fd, *iovs, iovs.length(), pos)
-    return;
   }
 
   SYNC_CALL(write, nullptr, fd, *iovs, iovs.length(), pos)
-  args.GetReturnValue().Set(SYNC_RESULT);
+  return SYNC_RESULT;
 }
 
+#if NAPI_MIGRATION
 
 // Wrapper for write(2).
 //
@@ -1084,15 +1124,15 @@ static void WriteBuffers(const FunctionCallbackInfo<Value>& args) {
 // 2 position  if integer, position to write at in the file.
 //             if null, write from the current position
 // 3 enc       encoding of string
-static void WriteString(const FunctionCallbackInfo<Value>& args) {
-  Environment* env = Environment::GetCurrent(args);
+static Napi::Value WriteString(const Napi::CallbackInfo& args) {
+  node_api::NodeEnvironment node_env(args.Env());
 
-  if (!args[0]->IsInt32())
-    return env->ThrowTypeError("First argument must be file descriptor");
+  if (!args[0].IsNumber())
+    return THROW_TYPE_ERROR("First argument must be file descriptor");
 
-  Local<Value> req;
-  Local<Value> string = args[1];
-  int fd = args[0]->Int32Value();
+  Napi::Value req;
+  Napi::Value string = args[1];
+  int fd = args[0].As<Napi::Number>().Int32Value();
   char* buf = nullptr;
   int64_t pos;
   size_t len;
@@ -1102,7 +1142,7 @@ static void WriteString(const FunctionCallbackInfo<Value>& args) {
   if (!StringBytes::GetExternalParts(string,
                                      const_cast<const char**>(&buf),
                                      &len)) {
-    enum encoding enc = ParseEncoding(env->isolate(), args[3], UTF8);
+    enum encoding enc = node_api::ParseEncoding(args.Env(), args[3], UTF8);
     len = StringBytes::StorageSize(env->isolate(), string, enc);
     buf = new char[len];
     // StorageSize may return too large a char, so correct the actual length
@@ -1115,7 +1155,7 @@ static void WriteString(const FunctionCallbackInfo<Value>& args) {
 
   uv_buf_t uvbuf = uv_buf_init(const_cast<char*>(buf), len);
 
-  if (!req->IsObject()) {
+  if (!req.IsObject()) {
     // SYNC_CALL returns on error.  Make sure to always free the memory.
     struct Delete {
       inline explicit Delete(char* pointer) : pointer_(pointer) {}
@@ -1124,7 +1164,7 @@ static void WriteString(const FunctionCallbackInfo<Value>& args) {
     };
     Delete delete_on_return(ownership == FSReqWrap::MOVE ? buf : nullptr);
     SYNC_CALL(write, nullptr, fd, &uvbuf, 1, pos)
-    return args.GetReturnValue().Set(SYNC_RESULT);
+    return SYNC_RESULT;
   }
 
   FSReqWrap* req_wrap =
@@ -1148,6 +1188,7 @@ static void WriteString(const FunctionCallbackInfo<Value>& args) {
   return args.GetReturnValue().Set(req_wrap->persistent());
 }
 
+#endif
 
 /*
  * Wrapper for read(2).
@@ -1161,37 +1202,37 @@ static void WriteString(const FunctionCallbackInfo<Value>& args) {
  * 4 position  file position - null for current position
  *
  */
-static void Read(const FunctionCallbackInfo<Value>& args) {
-  Environment* env = Environment::GetCurrent(args);
+static Napi::Value Read(const Napi::CallbackInfo& args) {
+  node_api::NodeEnvironment node_env(args.Env());
 
   if (args.Length() < 2)
-    return TYPE_ERROR("fd and buffer are required");
-  if (!args[0]->IsInt32())
-    return TYPE_ERROR("fd must be a file descriptor");
-  if (!Buffer::HasInstance(args[1]))
-    return TYPE_ERROR("Second argument needs to be a buffer");
+    return THROW_TYPE_ERROR("fd and buffer are required");
+  if (!args[0].IsNumber())
+    return THROW_TYPE_ERROR("fd must be a file descriptor");
+  if (!args[1].IsBuffer())
+    return THROW_TYPE_ERROR("Second argument needs to be a buffer");
 
-  int fd = args[0]->Int32Value();
+  int fd = args[0].As<Napi::Number>().Int32Value();
 
-  Local<Value> req;
+  Napi::Value req;
 
   size_t len;
   int64_t pos;
 
   char * buf = nullptr;
 
-  Local<Object> buffer_obj = args[1]->ToObject(env->isolate());
-  char *buffer_data = Buffer::Data(buffer_obj);
-  size_t buffer_length = Buffer::Length(buffer_obj);
+  Napi::Buffer<char> buffer_obj = args[1].As<Napi::Buffer<char>>();
+  char *buffer_data = buffer_obj.Data();
+  size_t buffer_length = buffer_obj.Length();
 
-  size_t off = args[2]->Int32Value();
+  size_t off = args[2].As<Napi::Number>().Int32Value();
   if (off >= buffer_length) {
-    return env->ThrowError("Offset is out of bounds");
+    return THROW_ERROR("Offset is out of bounds");
   }
 
-  len = args[3]->Int32Value();
+  len = args[3].As<Napi::Number>().Int32Value();
   if (!Buffer::IsWithinBounds(off, len, buffer_length))
-    return env->ThrowRangeError("Length extends beyond buffer");
+    return THROW_RANGE_ERROR("Length extends beyond buffer");
 
   pos = GET_OFFSET(args[4]);
 
@@ -1201,35 +1242,35 @@ static void Read(const FunctionCallbackInfo<Value>& args) {
 
   req = args[5];
 
-  if (req->IsObject()) {
+  if (req.IsObject()) {
     ASYNC_CALL(read, req, UTF8, fd, &uvbuf, 1, pos);
   } else {
     SYNC_CALL(read, 0, fd, &uvbuf, 1, pos)
-    args.GetReturnValue().Set(SYNC_RESULT);
+    return SYNC_RESULT;
   }
 }
-
 
 /* fs.chmod(path, mode);
  * Wrapper for chmod(1) / EIO_CHMOD
  */
-static void Chmod(const FunctionCallbackInfo<Value>& args) {
-  Environment* env = Environment::GetCurrent(args);
+static Napi::Value Chmod(const Napi::CallbackInfo& args) {
+  node_api::NodeEnvironment node_env(args.Env());
 
   if (args.Length() < 2)
-    return TYPE_ERROR("path and mode are required");
-  if (!args[1]->IsInt32())
-    return TYPE_ERROR("mode must be an integer");
+    return THROW_TYPE_ERROR("path and mode are required");
+  if (!args[1].IsNumber())
+    return THROW_TYPE_ERROR("mode must be an integer");
 
-  BufferValue path(env->isolate(), args[0]);
+  BufferValue path = node_api::BufferValue(args.Env(), args[0]);
   ASSERT_PATH(path)
 
-  int mode = static_cast<int>(args[1]->Int32Value());
+  int mode = static_cast<int>(args[1].As<Napi::Number>().Int32Value());
 
-  if (args[2]->IsObject()) {
+  if (args[2].IsObject()) {
     ASYNC_CALL(chmod, args[2], UTF8, *path, mode);
   } else {
     SYNC_CALL(chmod, *path, *path, mode);
+    return SYNC_RESULT;
   }
 }
 
@@ -1237,23 +1278,24 @@ static void Chmod(const FunctionCallbackInfo<Value>& args) {
 /* fs.fchmod(fd, mode);
  * Wrapper for fchmod(1) / EIO_FCHMOD
  */
-static void FChmod(const FunctionCallbackInfo<Value>& args) {
-  Environment* env = Environment::GetCurrent(args);
+static Napi::Value FChmod(const Napi::CallbackInfo& args) {
+  node_api::NodeEnvironment node_env(args.Env());
 
   if (args.Length() < 2)
-    return TYPE_ERROR("fd and mode are required");
-  if (!args[0]->IsInt32())
-    return TYPE_ERROR("fd must be a file descriptor");
-  if (!args[1]->IsInt32())
-    return TYPE_ERROR("mode must be an integer");
+    return THROW_TYPE_ERROR("fd and mode are required");
+  if (!args[0].IsNumber())
+    return THROW_TYPE_ERROR("fd must be a file descriptor");
+  if (!args[1].IsNumber())
+    return THROW_TYPE_ERROR("mode must be an integer");
 
-  int fd = args[0]->Int32Value();
-  int mode = static_cast<int>(args[1]->Int32Value());
+  int fd = args[0].As<Napi::Number>().Int32Value();
+  int mode = static_cast<int>(args[1].As<Napi::Number>().Int32Value());
 
-  if (args[2]->IsObject()) {
+  if (args[2].IsObject()) {
     ASYNC_CALL(fchmod, args[2], UTF8, fd, mode);
   } else {
     SYNC_CALL(fchmod, 0, fd, mode);
+    return SYNC_RESULT;
   }
 }
 
@@ -1261,31 +1303,34 @@ static void FChmod(const FunctionCallbackInfo<Value>& args) {
 /* fs.chown(path, uid, gid);
  * Wrapper for chown(1) / EIO_CHOWN
  */
-static void Chown(const FunctionCallbackInfo<Value>& args) {
-  Environment* env = Environment::GetCurrent(args);
+static Napi::Value Chown(const Napi::CallbackInfo& args) {
+  node_api::NodeEnvironment node_env(args.Env());
 
   int len = args.Length();
   if (len < 1)
-    return TYPE_ERROR("path required");
+    return THROW_TYPE_ERROR("path required");
   if (len < 2)
-    return TYPE_ERROR("uid required");
+    return THROW_TYPE_ERROR("uid required");
   if (len < 3)
-    return TYPE_ERROR("gid required");
-  if (!args[1]->IsUint32())
-    return TYPE_ERROR("uid must be an unsigned int");
-  if (!args[2]->IsUint32())
-    return TYPE_ERROR("gid must be an unsigned int");
+    return THROW_TYPE_ERROR("gid required");
+  if (!args[1].IsNumber())
+    return THROW_TYPE_ERROR("uid must be an unsigned int");
+  if (!args[2].IsNumber())
+    return THROW_TYPE_ERROR("gid must be an unsigned int");
 
-  BufferValue path(env->isolate(), args[0]);
+  BufferValue path = node_api::BufferValue(args.Env(), args[0]);
   ASSERT_PATH(path)
 
-  uv_uid_t uid = static_cast<uv_uid_t>(args[1]->Uint32Value());
-  uv_gid_t gid = static_cast<uv_gid_t>(args[2]->Uint32Value());
+  uv_uid_t uid = static_cast<uv_uid_t>(
+      args[1].As<Napi::Number>().Uint32Value());
+  uv_gid_t gid = static_cast<uv_gid_t>(
+      args[2].As<Napi::Number>().Uint32Value());
 
-  if (args[3]->IsObject()) {
+  if (args[3].IsObject()) {
     ASYNC_CALL(chown, args[3], UTF8, *path, uid, gid);
   } else {
     SYNC_CALL(chown, *path, *path, uid, gid);
+    return SYNC_RESULT;
   }
 }
 
@@ -1293,196 +1338,227 @@ static void Chown(const FunctionCallbackInfo<Value>& args) {
 /* fs.fchown(fd, uid, gid);
  * Wrapper for fchown(1) / EIO_FCHOWN
  */
-static void FChown(const FunctionCallbackInfo<Value>& args) {
-  Environment* env = Environment::GetCurrent(args);
+static Napi::Value FChown(const Napi::CallbackInfo& args) {
+  node_api::NodeEnvironment node_env(args.Env());
 
   int len = args.Length();
   if (len < 1)
-    return TYPE_ERROR("fd required");
+    return THROW_TYPE_ERROR("fd required");
   if (len < 2)
-    return TYPE_ERROR("uid required");
+    return THROW_TYPE_ERROR("uid required");
   if (len < 3)
-    return TYPE_ERROR("gid required");
-  if (!args[0]->IsInt32())
-    return TYPE_ERROR("fd must be an int");
-  if (!args[1]->IsUint32())
-    return TYPE_ERROR("uid must be an unsigned int");
-  if (!args[2]->IsUint32())
-    return TYPE_ERROR("gid must be an unsigned int");
+    return THROW_TYPE_ERROR("gid required");
+  if (!args[0].IsNumber())
+    return THROW_TYPE_ERROR("fd must be an int");
+  if (!args[1].IsNumber())
+    return THROW_TYPE_ERROR("uid must be an unsigned int");
+  if (!args[2].IsNumber())
+    return THROW_TYPE_ERROR("gid must be an unsigned int");
 
-  int fd = args[0]->Int32Value();
-  uv_uid_t uid = static_cast<uv_uid_t>(args[1]->Uint32Value());
-  uv_gid_t gid = static_cast<uv_gid_t>(args[2]->Uint32Value());
+  int fd = args[0].As<Napi::Number>().Int32Value();
+  uv_uid_t uid = static_cast<uv_uid_t>(
+      args[1].As<Napi::Number>().Uint32Value());
+  uv_gid_t gid = static_cast<uv_gid_t>(
+      args[2].As<Napi::Number>().Uint32Value());
 
-  if (args[3]->IsObject()) {
+  if (args[3].IsObject()) {
     ASYNC_CALL(fchown, args[3], UTF8, fd, uid, gid);
   } else {
     SYNC_CALL(fchown, 0, fd, uid, gid);
+    return SYNC_RESULT;
   }
 }
 
 
-static void UTimes(const FunctionCallbackInfo<Value>& args) {
-  Environment* env = Environment::GetCurrent(args);
+static Napi::Value UTimes(const Napi::CallbackInfo& args) {
+  node_api::NodeEnvironment node_env(args.Env());
 
   int len = args.Length();
   if (len < 1)
-    return TYPE_ERROR("path required");
+    return THROW_TYPE_ERROR("path required");
   if (len < 2)
-    return TYPE_ERROR("atime required");
+    return THROW_TYPE_ERROR("atime required");
   if (len < 3)
-    return TYPE_ERROR("mtime required");
-  if (!args[1]->IsNumber())
-    return TYPE_ERROR("atime must be a number");
-  if (!args[2]->IsNumber())
-    return TYPE_ERROR("mtime must be a number");
+    return THROW_TYPE_ERROR("mtime required");
+  if (!args[1].IsNumber())
+    return THROW_TYPE_ERROR("atime must be a number");
+  if (!args[2].IsNumber())
+    return THROW_TYPE_ERROR("mtime must be a number");
 
-  BufferValue path(env->isolate(), args[0]);
+  BufferValue path = node_api::BufferValue(args.Env(), args[0]);
   ASSERT_PATH(path)
 
-  const double atime = static_cast<double>(args[1]->NumberValue());
-  const double mtime = static_cast<double>(args[2]->NumberValue());
+  const double atime = static_cast<double>(
+      args[1].As<Napi::Number>().DoubleValue());
+  const double mtime = static_cast<double>(
+      args[2].As<Napi::Number>().DoubleValue());
 
-  if (args[3]->IsObject()) {
+  if (args[3].IsObject()) {
     ASYNC_CALL(utime, args[3], UTF8, *path, atime, mtime);
   } else {
     SYNC_CALL(utime, *path, *path, atime, mtime);
+    return SYNC_RESULT;
   }
 }
 
-static void FUTimes(const FunctionCallbackInfo<Value>& args) {
-  Environment* env = Environment::GetCurrent(args);
+static Napi::Value FUTimes(const Napi::CallbackInfo& args) {
+  node_api::NodeEnvironment node_env(args.Env());
 
   int len = args.Length();
   if (len < 1)
-    return TYPE_ERROR("fd required");
+    return THROW_TYPE_ERROR("fd required");
   if (len < 2)
-    return TYPE_ERROR("atime required");
+    return THROW_TYPE_ERROR("atime required");
   if (len < 3)
-    return TYPE_ERROR("mtime required");
-  if (!args[0]->IsInt32())
-    return TYPE_ERROR("fd must be an int");
-  if (!args[1]->IsNumber())
-    return TYPE_ERROR("atime must be a number");
-  if (!args[2]->IsNumber())
-    return TYPE_ERROR("mtime must be a number");
+    return THROW_TYPE_ERROR("mtime required");
+  if (!args[0].IsNumber())
+    return THROW_TYPE_ERROR("fd must be an int");
+  if (!args[1].IsNumber())
+    return THROW_TYPE_ERROR("atime must be a number");
+  if (!args[2].IsNumber())
+    return THROW_TYPE_ERROR("mtime must be a number");
 
-  const int fd = args[0]->Int32Value();
-  const double atime = static_cast<double>(args[1]->NumberValue());
-  const double mtime = static_cast<double>(args[2]->NumberValue());
+  const int fd = args[0].As<Napi::Number>().Int32Value();
+  const double atime = static_cast<double>(args[1].As<Napi::Number>().DoubleValue());
+  const double mtime = static_cast<double>(args[2].As<Napi::Number>().DoubleValue());
 
-  if (args[3]->IsObject()) {
+  if (args[3].IsObject()) {
     ASYNC_CALL(futime, args[3], UTF8, fd, atime, mtime);
   } else {
     SYNC_CALL(futime, 0, fd, atime, mtime);
+    return SYNC_RESULT;
   }
 }
 
-static void Mkdtemp(const FunctionCallbackInfo<Value>& args) {
-  Environment* env = Environment::GetCurrent(args);
+static Napi::Value Mkdtemp(const Napi::CallbackInfo& args) {
+  node_api::NodeEnvironment node_env(args.Env());
 
   CHECK_GE(args.Length(), 2);
 
-  BufferValue tmpl(env->isolate(), args[0]);
+  BufferValue tmpl = node_api::BufferValue(args.Env(), args[0]);
   if (*tmpl == nullptr)
-    return TYPE_ERROR("template must be a string or Buffer");
+    return THROW_TYPE_ERROR("template must be a string or Buffer");
 
-  const enum encoding encoding = ParseEncoding(env->isolate(), args[1], UTF8);
+  const enum encoding encoding =
+      node_api::ParseEncoding(args.Env(), args[1], UTF8);
 
-  if (args[2]->IsObject()) {
+  if (args[2].IsObject()) {
     ASYNC_CALL(mkdtemp, args[2], encoding, *tmpl);
   } else {
     SYNC_CALL(mkdtemp, *tmpl, *tmpl);
     const char* path = static_cast<const char*>(SYNC_REQ.path);
 
-    Local<Value> error;
-    MaybeLocal<Value> rc =
-        StringBytes::Encode(env->isolate(), path, encoding, &error);
+    Napi::Value error;
+    Napi::String rc =
+        node_api::EncodeString(args.Env(), path, encoding, &error);
     if (rc.IsEmpty()) {
       // TODO(addaleax): Use `error` itself here.
-      return env->ThrowUVException(UV_EINVAL,
-                                   "mkdtemp",
-                                   "Invalid character encoding for filename",
-                                   *tmpl);
+      Napi::Value ex = node_api::UVException(
+          args.Env(),
+          UV_EINVAL,
+          "mkdtemp",
+          "Invalid character encoding for filename",
+          *tmpl);
+      ex.As<Napi::Error>().ThrowAsJavaScriptException();
     }
-    args.GetReturnValue().Set(rc.ToLocalChecked());
+    return rc;
   }
 }
 
-void GetStatValues(const FunctionCallbackInfo<Value>& args) {
-  Environment* env = Environment::GetCurrent(args);
-  double* fields = env->fs_stats_field_array();
+static Napi::Value GetStatValues(const Napi::CallbackInfo& args) {
+  node_api::NodeEnvironment node_env(args.Env());
+  double* fields = node_env.fs_stats_field_array();
   if (fields == nullptr) {
     // stat fields contains twice the number of entries because `fs.StatWatcher`
     // needs room to store data for *two* `fs.Stats` instances.
     fields = new double[2 * 14];
-    env->set_fs_stats_field_array(fields);
+    node_env.set_fs_stats_field_array(fields);
   }
-  Local<ArrayBuffer> ab = ArrayBuffer::New(env->isolate(),
-                                           fields,
-                                           sizeof(double) * 2 * 14);
-  Local<Float64Array> fields_array = Float64Array::New(ab, 0, 2 * 14);
-  args.GetReturnValue().Set(fields_array);
+  Napi::ArrayBuffer ab = Napi::ArrayBuffer::New(args.Env(),
+                                                fields,
+                                                sizeof(double) * 2 * 14);
+  Napi::Float64Array fields_array =
+      Napi::Float64Array::New(args.Env(), 2 * 14, ab, 0);
+  return fields_array;
 }
 
-void InitFs(Local<Object> target,
-            Local<Value> unused,
-            Local<Context> context,
-            void* priv) {
-  Environment* env = Environment::GetCurrent(context);
+void InitFs(Napi::Env env,
+            Napi::Object exports,
+            Napi::Object module) {
 
-  env->SetMethod(target, "access", Access);
-  env->SetMethod(target, "close", Close);
-  env->SetMethod(target, "open", Open);
-  env->SetMethod(target, "read", Read);
-  env->SetMethod(target, "fdatasync", Fdatasync);
-  env->SetMethod(target, "fsync", Fsync);
-  env->SetMethod(target, "rename", Rename);
-  env->SetMethod(target, "ftruncate", FTruncate);
-  env->SetMethod(target, "rmdir", RMDir);
-  env->SetMethod(target, "mkdir", MKDir);
-  env->SetMethod(target, "readdir", ReadDir);
-  env->SetMethod(target, "internalModuleReadFile", InternalModuleReadFile);
-  env->SetMethod(target, "internalModuleStat", InternalModuleStat);
-  env->SetMethod(target, "stat", Stat);
-  env->SetMethod(target, "lstat", LStat);
-  env->SetMethod(target, "fstat", FStat);
-  env->SetMethod(target, "link", Link);
-  env->SetMethod(target, "symlink", Symlink);
-  env->SetMethod(target, "readlink", ReadLink);
-  env->SetMethod(target, "unlink", Unlink);
-  env->SetMethod(target, "writeBuffer", WriteBuffer);
-  env->SetMethod(target, "writeBuffers", WriteBuffers);
-  env->SetMethod(target, "writeString", WriteString);
-  env->SetMethod(target, "realpath", RealPath);
+  exports.DefineProperties({
 
-  env->SetMethod(target, "chmod", Chmod);
-  env->SetMethod(target, "fchmod", FChmod);
-  // env->SetMethod(target, "lchmod", LChmod);
+#define MODULE_FN(name, fn) \
+    Napi::PropertyDescriptor::Function(name, fn, napi_writable)
 
-  env->SetMethod(target, "chown", Chown);
-  env->SetMethod(target, "fchown", FChown);
-  // env->SetMethod(target, "lchown", LChown);
+    MODULE_FN("access", Access),
+    MODULE_FN("close", Close),
 
-  env->SetMethod(target, "utimes", UTimes);
-  env->SetMethod(target, "futimes", FUTimes);
+    MODULE_FN("open", Open),
+    MODULE_FN("read", Read),
+    MODULE_FN("fdatasync", Fdatasync),
+    MODULE_FN("fsync", Fsync),
+    MODULE_FN("rename", Rename),
+    MODULE_FN("ftruncate", FTruncate),
+    MODULE_FN("rmdir", RMDir),
+    MODULE_FN("mkdir", MKDir),
+    MODULE_FN("readdir", ReadDir),
 
-  env->SetMethod(target, "mkdtemp", Mkdtemp);
+    MODULE_FN("internalModuleReadFile", InternalModuleReadFile),
+    MODULE_FN("internalModuleStat", InternalModuleStat),
+    MODULE_FN("stat", Stat),
+    MODULE_FN("lstat", LStat),
+    MODULE_FN("fstat", FStat),
+    MODULE_FN("link", Link),
+    MODULE_FN("symlink", Symlink),
 
-  env->SetMethod(target, "getStatValues", GetStatValues);
+    MODULE_FN("readlink", ReadLink),
+    MODULE_FN("unlink", Unlink),
+    MODULE_FN("writeBuffer", WriteBuffer),
+    MODULE_FN("writeBuffers", WriteBuffers),
+#ifdef NAPI_MIGRATION
+    MODULE_FN("writeString", WriteString),
+#endif  // NAPI_MIGRATION
+    MODULE_FN("realpath", RealPath),
 
-  StatWatcher::Initialize(env, target);
+    MODULE_FN("chmod", Chmod),
+    MODULE_FN("fchmod", FChmod),
+    // MODULE_FN("lchmod", LChmod),
+
+    MODULE_FN("chown", Chown),
+    MODULE_FN("fchown", FChown),
+    // MODULE_FN("lchown", LChown),
+
+    MODULE_FN("utimes", UTimes),
+    MODULE_FN("futimes", FUTimes),
+
+    MODULE_FN("mkdtemp", Mkdtemp),
+
+    MODULE_FN("getStatValues", GetStatValues),
+  });
+
+#undef MODULE_FN
+
+  // TODO: Convert following V8 code to N-API.
+  // The challenge is N-API doesn't expose a way to set the internal field
+  // count on a constructor instance template, as is required by AsyncWrap.
+  node::Environment* node_env =
+    Environment::GetCurrent(node_api::V8IsolateFromNapiEnv(env));
+  StatWatcher::Initialize(
+      node_env,
+      node_api::V8LocalValueFromJsValue(exports).As<v8::Object>());
 
   // Create FunctionTemplate for FSReqWrap
-  Local<FunctionTemplate> fst =
-      FunctionTemplate::New(env->isolate(), NewFSReqWrap);
+  v8::Isolate* isolate = node_api::V8IsolateFromNapiEnv(env);
+  v8::Local<v8::FunctionTemplate> fst =
+      v8::FunctionTemplate::New(isolate, NewFSReqWrap);
   fst->InstanceTemplate()->SetInternalFieldCount(1);
-  env->SetProtoMethod(fst, "getAsyncId", AsyncWrap::GetAsyncId);
-  fst->SetClassName(FIXED_ONE_BYTE_STRING(env->isolate(), "FSReqWrap"));
-  target->Set(FIXED_ONE_BYTE_STRING(env->isolate(), "FSReqWrap"),
-              fst->GetFunction());
+  node_env->SetProtoMethod(fst, "getAsyncId", AsyncWrap::GetAsyncId);
+  fst->SetClassName(FIXED_ONE_BYTE_STRING(isolate, "FSReqWrap"));
+  node_api::V8LocalValueFromJsValue(exports).As<v8::Object>()->Set(
+    FIXED_ONE_BYTE_STRING(isolate, "FSReqWrap"), fst->GetFunction());
 }
 
-}  // end namespace node
+NODE_API_MODULE_BUILTIN(fs, InitFs)
 
-NODE_MODULE_CONTEXT_AWARE_BUILTIN(fs, node::InitFs)
+}  // end namespace node
