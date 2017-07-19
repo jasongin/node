@@ -411,20 +411,29 @@ inline bool Boolean::Value() const {
 ////////////////////////////////////////////////////////////////////////////////
 
 inline Number Number::New(napi_env env, int32_t val) {
-  return New(env, static_cast<double>(val));
+  napi_value value;
+  napi_status status = napi_create_int32(env, val, &value);
+  NAPI_THROW_IF_FAILED(env, status, Number());
+  return Number(env, value);
 }
 
 inline Number Number::New(napi_env env, uint32_t val) {
-  return New(env, static_cast<double>(val));
+  napi_value value;
+  napi_status status = napi_create_uint32(env, val, &value);
+  NAPI_THROW_IF_FAILED(env, status, Number());
+  return Number(env, value);
 }
 
 inline Number Number::New(napi_env env, int64_t val) {
-  return New(env, static_cast<double>(val));
+  napi_value value;
+  napi_status status = napi_create_int64(env, val, &value);
+  NAPI_THROW_IF_FAILED(env, status, Number());
+  return Number(env, value);
 }
 
 inline Number Number::New(napi_env env, double val) {
   napi_value value;
-  napi_status status = napi_create_number(env, val, &value);
+  napi_status status = napi_create_double(env, val, &value);
   NAPI_THROW_IF_FAILED(env, status, Number());
   return Number(env, value);
 }

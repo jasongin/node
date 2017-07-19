@@ -101,7 +101,7 @@ class FSReqWrap: public ReqWrap<uv_fs_t> {
             const char* data,
             enum encoding encoding)
       : ReqWrap(
-          Environment::GetCurrent(node_api::V8IsolateFromNapiEnv(env)),
+          node_api::NodeEnvironmentFromNapiEnv(env),
           node_api::V8LocalValueFromJsValue(req).As<v8::Object>(),
           AsyncWrap::PROVIDER_FSREQWRAP),
         napi_env_(env),
@@ -171,7 +171,9 @@ void After(uv_fs_t *req) {
   req_wrap->ReleaseEarly();  // Free memory that's no longer used now.
 
   Napi::Env env = req_wrap->napi_env();
-  Napi::HandleScope handle_scope(env);
+
+  // TODO: Change to N-API HandleScope
+  v8::HandleScope handle_scope(node_api::V8IsolateFromNapiEnv(env));
 
   // TODO: Is this necessary?
   //Context::Scope context_scope(env->context());
@@ -237,11 +239,11 @@ void After(uv_fs_t *req) {
         break;
 
       case UV_FS_OPEN:
-        argv[1] = Napi::Number::New(env, static_cast<int64_t>(req->result));
+        argv[1] = Napi::Number::New(env, static_cast<int32_t>(req->result));
         break;
 
       case UV_FS_WRITE:
-        argv[1] = Napi::Number::New(env, static_cast<int64_t>(req->result));
+        argv[1] = Napi::Number::New(env, static_cast<int32_t>(req->result));
         break;
 
       case UV_FS_MKDTEMP:
@@ -302,7 +304,7 @@ void After(uv_fs_t *req) {
 
       case UV_FS_READ:
         // Buffer interface
-        argv[1] = Napi::Number::New(env, static_cast<int64_t>(req->result));
+        argv[1] = Napi::Number::New(env, static_cast<int32_t>(req->result));
         break;
 
       case UV_FS_SCANDIR:
@@ -387,7 +389,6 @@ class fs_req_wrap {
 
 
 #define ASYNC_DEST_CALL(func, request, dest, encoding, ...)                   \
-  CHECK(request.IsObject());                                                  \
   FSReqWrap* req_wrap = FSReqWrap::New(args.Env(), request.As<Napi::Object>(),\
                                        #func, dest, encoding);                \
   int err = uv_fs_ ## func(node_env.event_loop(),                             \
@@ -436,7 +437,6 @@ Napi::Value Access(const Napi::CallbackInfo& args) {
   if (!args[1].IsNumber())
     return THROW_TYPE_ERROR("mode must be an integer");
 
-  Napi::HandleScope scope(args.Env());
   node_api::NodeEnvironment node_env(args.Env());
 
   BufferValue path = node_api::BufferValue(args.Env(), args[0]);
@@ -473,28 +473,28 @@ Napi::Value Close(const Napi::CallbackInfo& args) {
 }  // anonymous namespace
 
 void FillStatsArray(double* fields, const uv_stat_t* s) {
-  fields[0] = s->st_dev;
-  fields[1] = s->st_mode;
-  fields[2] = s->st_nlink;
-  fields[3] = s->st_uid;
-  fields[4] = s->st_gid;
-  fields[5] = s->st_rdev;
+  fields[0] = static_cast<double>(s->st_dev);
+  fields[1] = static_cast<double>(s->st_mode);
+  fields[2] = static_cast<double>(s->st_nlink);
+  fields[3] = static_cast<double>(s->st_uid);
+  fields[4] = static_cast<double>(s->st_gid);
+  fields[5] = static_cast<double>(s->st_rdev);
 #if defined(__POSIX__)
-  fields[6] = s->st_blksize;
+  fields[6] = static_cast<double>(s->st_blksize);
 #else
-  fields[6] = -1;
+  fields[6] = static_cast<double>(-1);
 #endif
-  fields[7] = s->st_ino;
-  fields[8] = s->st_size;
+  fields[7] = static_cast<double>(s->st_ino);
+  fields[8] = static_cast<double>(s->st_size);
 #if defined(__POSIX__)
-  fields[9] = s->st_blocks;
+  fields[9] = static_cast<double>(s->st_blocks);
 #else
-  fields[9] = -1;
+  fields[9] = static_cast<double>(-1);
 #endif
   // Dates.
 #define X(idx, name)                          \
-  fields[idx] = (s->st_##name.tv_sec * 1e3) + \
-                (s->st_##name.tv_nsec / 1e6); \
+  fields[idx] = static_cast<double>((s->st_##name.tv_sec * 1e3) + \
+                                    (s->st_##name.tv_nsec / 1e6)); \
 
   X(10, atim)
   X(11, mtim)
@@ -706,10 +706,7 @@ static Napi::Value ReadLink(const Napi::CallbackInfo& args) {
   const enum encoding encoding =
     node_api::ParseEncoding(args.Env(), args[1], UTF8);
 
-  Napi::Value callback = args.Env().Null();
-  if (argc == 3)
-    callback = args[2];
-
+  Napi::Value callback = args[2];
   if (callback.IsObject()) {
     ASYNC_CALL(readlink, callback, encoding, *path)
   } else {
@@ -892,10 +889,7 @@ static Napi::Value RealPath(const Napi::CallbackInfo& args) {
   const enum encoding encoding =
       node_api::ParseEncoding(args.Env(), args[1], UTF8);
 
-  Napi::Value callback = args.Env().Null();
-  if (argc == 3)
-    callback = args[2];
-
+  Napi::Value callback = args[2];
   if (callback.IsObject()) {
     ASYNC_CALL(realpath, callback, encoding, *path);
   } else {
@@ -935,10 +929,7 @@ static Napi::Value ReadDir(const Napi::CallbackInfo& args) {
   const enum encoding encoding =
       node_api::ParseEncoding(args.Env(), args[1], UTF8);
 
-  Napi::Value callback = args.Env().Null();
-  if (argc == 3)
-    callback = args[2];
-
+  Napi::Value callback = args[2];
   if (callback.IsObject()) {
     ASYNC_CALL(scandir, callback, encoding, *path, 0 /*flags*/)
   } else {
@@ -1214,8 +1205,6 @@ static Napi::Value Read(const Napi::CallbackInfo& args) {
 
   int fd = args[0].As<Napi::Number>().Int32Value();
 
-  Napi::Value req;
-
   size_t len;
   int64_t pos;
 
@@ -1240,7 +1229,7 @@ static Napi::Value Read(const Napi::CallbackInfo& args) {
 
   uv_buf_t uvbuf = uv_buf_init(const_cast<char*>(buf), len);
 
-  req = args[5];
+  Napi::Value req = args[5];
 
   if (req.IsObject()) {
     ASYNC_CALL(read, req, UTF8, fd, &uvbuf, 1, pos);
@@ -1542,8 +1531,7 @@ void InitFs(Napi::Env env,
   // TODO: Convert following V8 code to N-API.
   // The challenge is N-API doesn't expose a way to set the internal field
   // count on a constructor instance template, as is required by AsyncWrap.
-  node::Environment* node_env =
-    Environment::GetCurrent(node_api::V8IsolateFromNapiEnv(env));
+  node::Environment* node_env = node_api::NodeEnvironmentFromNapiEnv(env);
   StatWatcher::Initialize(
       node_env,
       node_api::V8LocalValueFromJsValue(exports).As<v8::Object>());

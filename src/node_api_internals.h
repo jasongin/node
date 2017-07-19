@@ -12,9 +12,17 @@
 
 #include "node_api_types.h"
 
+#if defined(NODE_WANT_INTERNALS) && NODE_WANT_INTERNALS
+namespace node {
+  class Environment;
+}
+#endif
+
 struct napi_env__ {
-  explicit napi_env__(v8::Isolate* _isolate): isolate(_isolate),
-      has_instance_available(true), last_error() {}
+  napi_env__(v8::Isolate* _isolate)
+    : isolate(_isolate),
+      has_instance_available(true),
+      last_error() {}
   ~napi_env__() {
     last_exception.Reset();
     has_instance.Reset();
@@ -24,6 +32,14 @@ struct napi_env__ {
   v8::Persistent<v8::Value> has_instance;
   bool has_instance_available;
   napi_extended_error_info last_error;
+
+#if defined(NODE_WANT_INTERNALS) && NODE_WANT_INTERNALS
+  napi_env__(v8::Isolate* _isolate, node::Environment* _node_env)
+    : napi_env__(_isolate) {
+    node_env = _node_env;
+  }
+  node::Environment* node_env;
+#endif
 };
 
 namespace node_api {
@@ -46,6 +62,14 @@ inline v8::Local<v8::Value> V8LocalValueFromJsValue(napi_value v) {
 inline v8::Isolate* V8IsolateFromNapiEnv(napi_env env) {
   return env->isolate;
 }
+
+#if defined(NODE_WANT_INTERNALS) && NODE_WANT_INTERNALS
+
+inline node::Environment* NodeEnvironmentFromNapiEnv(napi_env env) {
+  return env->node_env;
+}
+
+#endif
 
 }  // namespace node_api
 

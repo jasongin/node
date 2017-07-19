@@ -98,15 +98,14 @@ inline enum node::encoding ParseEncoding(
                              default_encoding);
 }
 
-inline Napi::Value MakeAsyncCallback(node::AsyncWrap* asyncWrap,
-                                     Napi::String symbol,
-                                     int argc,
-                                     napi_value* argv) {
-  v8::Local<v8::Value> result = asyncWrap->MakeCallback(
+inline void MakeAsyncCallback(node::AsyncWrap* asyncWrap,
+                              Napi::String symbol,
+                              int argc,
+                              napi_value* argv) {
+  asyncWrap->MakeCallback(
       V8LocalValueFromJsValue(symbol).As<v8::String>(),
       argc,
       reinterpret_cast<v8::Local<v8::Value>*>(argv));
-  return Napi::Value(symbol.Env(), JsValueFromV8LocalValue(result));
 }
 
 inline node::BufferValue BufferValue(Napi::Env env, Napi::Value value) {
@@ -118,7 +117,7 @@ class NodeEnvironment {
 public:
   NodeEnvironment(Napi::Env env)
     : _env(env),
-      _node_env(node::Environment::GetCurrent(V8IsolateFromNapiEnv(env))) {
+      _node_env(NodeEnvironmentFromNapiEnv(env)) {
   }
 
   Napi::Function push_values_to_array_function() const {
