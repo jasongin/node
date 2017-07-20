@@ -11,10 +11,19 @@ const cli = CLI(`usage: ./node run.js [options] [--] <category> ...
   --filter pattern          string to filter benchmark scripts
   --set    variable=value   set benchmark variable (can be repeated)
   --format [simple|csv]     optional value that specifies the output format
+  --repeat count            number of times to repeat all benchmarks
 `, {
   arrayArgs: ['set']
 });
-const benchmarks = cli.benchmarks();
+let benchmarks = cli.benchmarks();
+
+const repeat = cli.optional.repeat || 1;
+let repeatedBenchmarks = [];
+for (let i = 0; i < repeat; i++) {
+  repeatedBenchmarks = repeatedBenchmarks.concat(benchmarks);
+  repeatedBenchmarks.push(null);
+}
+benchmarks = repeatedBenchmarks;
 
 if (benchmarks.length === 0) {
   console.error('No benchmarks found');
@@ -22,7 +31,7 @@ if (benchmarks.length === 0) {
   return;
 }
 
-const validFormats = ['csv', 'simple'];
+const validFormats = ['table', 'csv', 'simple'];
 const format = cli.optional.format || 'simple';
 if (!validFormats.includes(format)) {
   console.error('Invalid format detected');
@@ -36,9 +45,19 @@ if (format === 'csv') {
 
 (function recursive(i) {
   const filename = benchmarks[i];
+  if (filename === null) {
+    if (format === 'table') {
+      process.stdout.write('\n');
+    }
+    if (i + 1 < benchmarks.length) {
+      recursive(i + 1);
+    }
+    return;
+  }
+
   const child = fork(path.resolve(__dirname, filename), cli.optional.set);
 
-  if (format !== 'csv') {
+  if (format === 'simple') {
     console.log();
     console.log(filename);
   }
@@ -54,7 +73,9 @@ if (format === 'csv') {
     }
     // delete first space of the configuration
     conf = conf.slice(1);
-    if (format === 'csv') {
+    if (format === 'table') {
+      process.stdout.write(data.rate.toString() + '\t');
+    } else if (format === 'csv') {
       // Escape quotes (") for correct csv formatting
       conf = conf.replace(/"/g, '""');
       console.log(`"${data.name}", "${conf}", ${data.rate}, ${data.time}`);
