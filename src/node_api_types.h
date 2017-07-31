@@ -102,4 +102,11 @@ typedef struct {
   napi_status error_code;
 } napi_extended_error_info;
 
+typedef double napi_async_id;
+
+typedef struct {
+  napi_async_id async_id;
+  napi_async_id trigger_async_id;
+} napi_async_context;
+
 #endif  // SRC_NODE_API_TYPES_H_
