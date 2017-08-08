@@ -50,6 +50,10 @@ namespace http2 {
 struct http2_state;
 }
 
+namespace performance {
+struct performance_state;
+}
+
 // Pick an index that's hopefully out of the way when we're embedded inside
 // another application. Performance-wise or memory-wise it doesn't matter:
 // Context::SetAlignedPointerInEmbedderData() is backed by a FixedArray,
